@@ -1,4 +1,6 @@
-//! zig-msdf: A pure Zig library for generating Multi-channel Signed Distance Fields from TrueType fonts.
+//! zig-msdf: A pure Zig library for generating Multi-channel Signed Distance Fields from OpenType fonts.
+//!
+//! Supports both TrueType (quadratic Bezier) and CFF (cubic Bezier) outline formats.
 //!
 //! ## Example Usage
 //! ```zig
@@ -33,6 +35,9 @@ pub const glyf = @import("truetype/glyf.zig");
 pub const cmap = @import("truetype/cmap.zig");
 pub const hhea_hmtx = @import("truetype/hhea_hmtx.zig");
 pub const head_maxp = @import("truetype/head_maxp.zig");
+
+// CFF parser modules
+pub const cff = @import("cff/cff.zig");
 
 /// Options for generating a single glyph MSDF.
 pub const GenerateOptions = struct {
@@ -136,6 +141,8 @@ pub const MsdfError = error{
     InvalidHmtxTable,
     /// The 'glyf' table data is invalid or glyph outline is corrupted.
     InvalidGlyfTable,
+    /// The CFF table data is invalid or glyph outline is corrupted.
+    InvalidCffTable,
     /// Memory allocation failed.
     OutOfMemory,
     /// The requested glyph is not in the font.
@@ -177,22 +184,37 @@ pub fn generateGlyph(
     const hmtx_data = font.getTableData("hmtx") orelse return MsdfError.MissingTable;
     const hmtx = hhea_hmtx.HmtxTable.init(hmtx_data, hhea.num_of_long_hor_metrics, maxp.num_glyphs) catch return MsdfError.InvalidHmtxTable;
 
-    const loca_table = font.findTable("loca") orelse return MsdfError.MissingTable;
-    const glyf_table = font.findTable("glyf") orelse return MsdfError.MissingTable;
-
     // Look up glyph index from codepoint
     const glyph_index = cmap_table.getGlyphIndex(codepoint) catch return MsdfError.InvalidCmapTable;
 
-    // Parse glyph outline
-    var shape = glyf.parseGlyph(
-        allocator,
-        font.data,
-        loca_table.offset,
-        glyf_table.offset,
-        glyph_index,
-        maxp.num_glyphs,
-        head.usesLongLocaFormat(),
-    ) catch return MsdfError.InvalidGlyfTable;
+    // Parse glyph outline - detect CFF vs TrueType
+    var shape: contour.Shape = undefined;
+    const is_cff = font.findTable("CFF ") != null;
+
+    if (is_cff) {
+        // CFF font - use CFF parser
+        const cff_table = font.findTable("CFF ").?;
+        shape = cff.parseGlyph(
+            allocator,
+            font.data,
+            cff_table.offset,
+            glyph_index,
+        ) catch return MsdfError.InvalidCffTable;
+    } else {
+        // TrueType font - use glyf parser
+        const loca_table = font.findTable("loca") orelse return MsdfError.MissingTable;
+        const glyf_table = font.findTable("glyf") orelse return MsdfError.MissingTable;
+
+        shape = glyf.parseGlyph(
+            allocator,
+            font.data,
+            loca_table.offset,
+            glyf_table.offset,
+            glyph_index,
+            maxp.num_glyphs,
+            head.usesLongLocaFormat(),
+        ) catch return MsdfError.InvalidGlyfTable;
+    }
     defer shape.deinit();
 
     // Get glyph metrics
