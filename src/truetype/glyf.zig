@@ -101,8 +101,15 @@ pub fn getGlyphOffset(
         next_offset = @as(u32, try readU16Big(data, index_offset + 2)) * 2;
     }
 
+    // Validate offsets don't go backwards (would indicate corrupted loca table)
+    if (next_offset < this_offset) return ParseError.InvalidFontData;
+
     const glyph_data_offset = glyf_offset + this_offset;
     const length = next_offset - this_offset;
+
+    // Validate glyph data is within bounds of the font data
+    if (glyph_data_offset > data.len) return ParseError.OutOfBounds;
+    if (length > 0 and glyph_data_offset + length > data.len) return ParseError.OutOfBounds;
 
     return .{ .offset = glyph_data_offset, .length = length };
 }
@@ -146,6 +153,10 @@ fn parseSimpleGlyph(allocator: std.mem.Allocator, glyph_data: []const u8, num_co
     // Glyph header: numberOfContours (i16), xMin, yMin, xMax, yMax (all i16)
     const HEADER_SIZE: usize = 10;
 
+    // Validate minimum glyph data size for header + endpoint array
+    const min_size = HEADER_SIZE + @as(usize, num_contours) * 2 + 2; // +2 for instruction length
+    if (glyph_data.len < min_size) return ParseError.OutOfBounds;
+
     // Read end points of contours
     var end_points = allocator.alloc(u16, num_contours) catch return ParseError.OutOfMemory;
     defer allocator.free(end_points);
@@ -159,9 +170,16 @@ fn parseSimpleGlyph(allocator: std.mem.Allocator, glyph_data: []const u8, num_co
     // Total number of points is one more than the last endpoint
     const num_points: usize = @as(usize, end_points[num_contours - 1]) + 1;
 
+    // Validate num_points is reasonable (prevent excessive allocation)
+    if (num_points > 65536) return ParseError.InvalidFontData;
+
     // Read instruction length and skip instructions
     const instruction_length = try readU16Big(glyph_data, offset);
-    offset += 2 + instruction_length;
+    offset += 2;
+
+    // Validate instruction length doesn't exceed remaining data
+    if (offset + instruction_length > glyph_data.len) return ParseError.OutOfBounds;
+    offset += instruction_length;
 
     // Read flags (RLE compressed)
     var flags = allocator.alloc(u8, num_points) catch return ParseError.OutOfMemory;
@@ -442,6 +460,9 @@ fn parseCompoundGlyph(
     num_glyphs: u16,
     use_long_loca: bool,
 ) ParseError!Shape {
+    // Validate minimum size for header + at least one component (flags + glyph index)
+    if (glyph_data.len < 14) return ParseError.OutOfBounds;
+
     // Skip glyph header (10 bytes)
     var offset: usize = 10;
 

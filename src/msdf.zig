@@ -124,6 +124,18 @@ pub const MsdfError = error{
     MissingTable,
     /// The font data is invalid or corrupted.
     InvalidFontData,
+    /// The 'head' table data is invalid.
+    InvalidHeadTable,
+    /// The 'maxp' table data is invalid.
+    InvalidMaxpTable,
+    /// The 'cmap' table data is invalid.
+    InvalidCmapTable,
+    /// The 'hhea' table data is invalid.
+    InvalidHheaTable,
+    /// The 'hmtx' table data is invalid.
+    InvalidHmtxTable,
+    /// The 'glyf' table data is invalid or glyph outline is corrupted.
+    InvalidGlyfTable,
     /// Memory allocation failed.
     OutOfMemory,
     /// The requested glyph is not in the font.
@@ -150,26 +162,26 @@ pub fn generateGlyph(
 ) MsdfError!MsdfResult {
     // Parse required tables
     const head_data = font.getTableData("head") orelse return MsdfError.MissingTable;
-    const head = head_maxp.HeadTable.parse(head_data) catch return MsdfError.InvalidFontData;
+    const head = head_maxp.HeadTable.parse(head_data) catch return MsdfError.InvalidHeadTable;
 
     const maxp_data = font.getTableData("maxp") orelse return MsdfError.MissingTable;
-    const maxp = head_maxp.MaxpTable.parse(maxp_data) catch return MsdfError.InvalidFontData;
+    const maxp = head_maxp.MaxpTable.parse(maxp_data) catch return MsdfError.InvalidMaxpTable;
 
     _ = font.getTableData("cmap") orelse return MsdfError.MissingTable;
     const cmap_table_offset = font.findTable("cmap").?.offset;
-    const cmap_table = cmap.CmapTable.parse(font.data, cmap_table_offset) catch return MsdfError.InvalidFontData;
+    const cmap_table = cmap.CmapTable.parse(font.data, cmap_table_offset) catch return MsdfError.InvalidCmapTable;
 
     const hhea_data = font.getTableData("hhea") orelse return MsdfError.MissingTable;
-    const hhea = hhea_hmtx.HheaTable.parse(hhea_data) catch return MsdfError.InvalidFontData;
+    const hhea = hhea_hmtx.HheaTable.parse(hhea_data) catch return MsdfError.InvalidHheaTable;
 
     const hmtx_data = font.getTableData("hmtx") orelse return MsdfError.MissingTable;
-    const hmtx = hhea_hmtx.HmtxTable.init(hmtx_data, hhea.num_of_long_hor_metrics, maxp.num_glyphs) catch return MsdfError.InvalidFontData;
+    const hmtx = hhea_hmtx.HmtxTable.init(hmtx_data, hhea.num_of_long_hor_metrics, maxp.num_glyphs) catch return MsdfError.InvalidHmtxTable;
 
     const loca_table = font.findTable("loca") orelse return MsdfError.MissingTable;
     const glyf_table = font.findTable("glyf") orelse return MsdfError.MissingTable;
 
     // Look up glyph index from codepoint
-    const glyph_index = cmap_table.getGlyphIndex(codepoint) catch return MsdfError.InvalidFontData;
+    const glyph_index = cmap_table.getGlyphIndex(codepoint) catch return MsdfError.InvalidCmapTable;
 
     // Parse glyph outline
     var shape = glyf.parseGlyph(
@@ -180,12 +192,12 @@ pub fn generateGlyph(
         glyph_index,
         maxp.num_glyphs,
         head.usesLongLocaFormat(),
-    ) catch return MsdfError.InvalidFontData;
+    ) catch return MsdfError.InvalidGlyfTable;
     defer shape.deinit();
 
     // Get glyph metrics
-    const advance_width = hmtx.getAdvanceWidth(glyph_index) catch return MsdfError.InvalidFontData;
-    const left_side_bearing = hmtx.getLeftSideBearing(glyph_index) catch return MsdfError.InvalidFontData;
+    const advance_width = hmtx.getAdvanceWidth(glyph_index) catch return MsdfError.InvalidHmtxTable;
+    const left_side_bearing = hmtx.getLeftSideBearing(glyph_index) catch return MsdfError.InvalidHmtxTable;
 
     // Calculate glyph bounding box
     const shape_bounds = shape.bounds();

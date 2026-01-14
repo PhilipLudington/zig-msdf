@@ -113,9 +113,15 @@ pub const TableDirectory = struct {
 
     /// Find a table by its 4-character tag.
     /// Returns null if the table is not found.
+    ///
+    /// Note: If a table record cannot be read (e.g., corrupted font data),
+    /// that record is skipped and the search continues. This is intentional
+    /// to allow partial recovery from minor font corruption.
     pub fn findTable(self: TableDirectory, tag: *const [4]u8) ?TableRecord {
         var i: u16 = 0;
         while (i < self.num_tables) : (i += 1) {
+            // Skip records that can't be read - this allows partial recovery
+            // from minor font corruption while still finding valid tables
             const record = self.getRecord(i) catch continue;
             if (record.matchesTag(tag)) {
                 return record;
@@ -134,10 +140,13 @@ pub const TableDirectory = struct {
 };
 
 /// Iterator over table records in a font.
+/// Note: If a table record cannot be read, iteration stops and returns null.
 pub const TableIterator = struct {
     directory: TableDirectory,
     index: u16,
 
+    /// Returns the next table record, or null if no more records or on error.
+    /// Unlike findTable, iteration stops on error rather than skipping.
     pub fn next(self: *TableIterator) ?TableRecord {
         if (self.index >= self.directory.num_tables) return null;
         const record = self.directory.getRecord(self.index) catch return null;
