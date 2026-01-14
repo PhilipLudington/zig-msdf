@@ -26,9 +26,9 @@ pub const math = @import("generator/math.zig");
 // pub const coloring = @import("generator/coloring.zig");
 // pub const generate = @import("generator/generate.zig");
 
-// TrueType parser modules (to be implemented)
-// pub const parser = @import("truetype/parser.zig");
-// pub const tables = @import("truetype/tables.zig");
+// TrueType parser modules
+pub const truetype_parser = @import("truetype/parser.zig");
+pub const truetype_tables = @import("truetype/tables.zig");
 // pub const glyf = @import("truetype/glyf.zig");
 // pub const cmap = @import("truetype/cmap.zig");
 // pub const hhea_hmtx = @import("truetype/hhea_hmtx.zig");
@@ -116,43 +116,7 @@ pub const AtlasResult = struct {
 };
 
 /// A parsed TrueType font.
-pub const Font = struct {
-    allocator: std.mem.Allocator,
-    data: []const u8,
-    owns_data: bool,
-
-    /// Load a font from a file path.
-    pub fn fromFile(_: std.mem.Allocator, _: []const u8) !Font {
-        // TODO: Implement file loading
-        return error.NotImplemented;
-    }
-
-    /// Load a font from memory.
-    pub fn fromMemory(_: std.mem.Allocator, _: []const u8) !Font {
-        // TODO: Implement memory loading
-        return error.NotImplemented;
-    }
-
-    /// Free resources associated with this font.
-    pub fn deinit(self: *Font) void {
-        if (self.owns_data) {
-            self.allocator.free(self.data);
-        }
-        self.* = undefined;
-    }
-
-    /// Get the glyph index for a Unicode codepoint.
-    pub fn getGlyphIndex(_: Font, _: u21) ?u16 {
-        // TODO: Implement cmap lookup
-        return null;
-    }
-
-    /// Get the units per em for this font.
-    pub fn getUnitsPerEm(_: Font) u16 {
-        // TODO: Implement
-        return 1000;
-    }
-};
+pub const Font = truetype_parser.Font;
 
 /// Generate an MSDF texture for a single glyph.
 pub fn generateGlyph(

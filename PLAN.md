@@ -34,18 +34,18 @@ A pure Zig library for generating Multi-channel Signed Distance Fields from True
 
 ## Phase 4: TrueType Parser - Foundation
 
-- [ ] Implement `src/truetype/parser.zig`:
-  - [ ] Big-endian read utilities: `readU16Big()`, `readU32Big()`, `readI16Big()`
-  - [ ] `Font` struct with all parsed table data
-  - [ ] `Font.fromFile()` - load font from filesystem
-  - [ ] `Font.fromMemory()` - load font from byte slice
-  - [ ] `Font.deinit()` - cleanup
+- [x] Implement `src/truetype/parser.zig`:
+  - [x] Big-endian read utilities: `readU16Big()`, `readU32Big()`, `readI16Big()`
+  - [x] `Font` struct with all parsed table data
+  - [x] `Font.fromFile()` - load font from filesystem
+  - [x] `Font.fromMemory()` - load font from byte slice
+  - [x] `Font.deinit()` - cleanup
 
-- [ ] Implement `src/truetype/tables.zig`:
-  - [ ] `TableRecord` struct (tag, checksum, offset, length)
-  - [ ] `TableDirectory` struct
-  - [ ] `parse()` - parse table directory from font data
-  - [ ] `findTable()` - locate table by 4-byte tag
+- [x] Implement `src/truetype/tables.zig`:
+  - [x] `TableRecord` struct (tag, checksum, offset, length)
+  - [x] `TableDirectory` struct
+  - [x] `parse()` - parse table directory from font data
+  - [x] `findTable()` - locate table by 4-byte tag
 
 ## Phase 5: TrueType Parser - Simple Tables
 
@@ -222,4 +222,4 @@ Phase 7 (glyf) ─────────┤            │
 
 ## Current Status
 
-**Phase 3 complete** - Ready to begin Phase 4 (TrueType Parser - Foundation).
+**Phase 4 complete** - Ready to begin Phase 5 (TrueType Parser - Simple Tables).
