@@ -24,7 +24,7 @@ pub const math = @import("generator/math.zig");
 pub const edge = @import("generator/edge.zig");
 pub const contour = @import("generator/contour.zig");
 pub const coloring = @import("generator/coloring.zig");
-// pub const generate = @import("generator/generate.zig");
+pub const generate = @import("generator/generate.zig");
 
 // TrueType parser modules
 pub const truetype_parser = @import("truetype/parser.zig");

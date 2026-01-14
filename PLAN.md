@@ -106,16 +106,18 @@ A pure Zig library for generating Multi-channel Signed Distance Fields from True
 
 ## Phase 9: MSDF Generation
 
-- [ ] Implement `src/generator/generate.zig`:
-  - [ ] `generateMsdf()` - core generation function:
-    - [ ] Allocate output pixel buffer (RGB8)
-    - [ ] For each pixel, compute world-space position
-    - [ ] Find minimum signed distance per channel (R, G, B)
-    - [ ] Apply winding number to determine inside/outside
-    - [ ] Convert distances to pixel values
-  - [ ] `computeWinding()` - determine if point is inside shape
-  - [ ] `distanceToPixel()` - map distance to 0-255 range
-  - [ ] `MsdfResult` struct with pixels, dimensions, metrics
+- [x] Implement `src/generator/generate.zig`:
+  - [x] `generateMsdf()` - core generation function:
+    - [x] Allocate output pixel buffer (RGB8)
+    - [x] For each pixel, compute world-space position
+    - [x] Find minimum signed distance per channel (R, G, B)
+    - [x] Apply winding number to determine inside/outside
+    - [x] Convert distances to pixel values
+  - [x] `computeWinding()` - determine if point is inside shape
+  - [x] `distanceToPixel()` - map distance to 0-255 range
+  - [x] `MsdfBitmap` struct with pixels, dimensions, allocator
+  - [x] `Transform` struct for pixel-to-shape coordinate mapping
+  - [x] `calculateTransform()` - fit shape into bitmap with padding
 
 ## Phase 10: High-Level Public API
 
@@ -222,4 +224,4 @@ Phase 7 (glyf) ─────────┤            │
 
 ## Current Status
 
-**Phase 8 complete** - Ready to begin Phase 9 (MSDF Generation).
+**Phase 9 complete** - Ready to begin Phase 10 (High-Level Public API).
