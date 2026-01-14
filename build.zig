@@ -57,6 +57,29 @@ pub fn build(b: *std.Build) void {
     const generate_atlas_step = b.step("generate-atlas", "Run the atlas generation example");
     generate_atlas_step.dependOn(&run_generate_atlas.step);
 
+    // Example: CFF font
+    const cff_font_exe = b.addExecutable(.{
+        .name = "cff_font",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/cff_font.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(cff_font_exe);
+
+    const run_cff_font = b.addRunArtifact(cff_font_exe);
+    run_cff_font.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_cff_font.addArgs(args);
+    }
+
+    const cff_font_step = b.step("cff-font", "Run the CFF font example");
+    cff_font_step.dependOn(&run_cff_font.step);
+
     // Unit tests
     const lib_tests = b.addTest(.{
         .root_module = msdf_module,

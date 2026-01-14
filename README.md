@@ -122,6 +122,7 @@ The `examples/` directory contains working examples:
 
 - **single_glyph.zig**: Generate an MSDF for a single character and output as PPM
 - **generate_atlas.zig**: Generate a font atlas and output as PPM with glyph metrics
+- **cff_font.zig**: Demonstrate CFF (OpenType) font support with format detection
 
 ## API Reference
 

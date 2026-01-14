@@ -117,26 +117,26 @@ pub const Interpreter = struct {
     call_depth: u8 = 0,
 
     // Output
-    contours: std.ArrayList(Contour),
-    current_edges: std.ArrayList(EdgeSegment),
+    contours: std.ArrayListUnmanaged(Contour),
+    current_edges: std.ArrayListUnmanaged(EdgeSegment),
 
     pub fn init(allocator: Allocator) Interpreter {
         return .{
             .allocator = allocator,
-            .contours = std.ArrayList(Contour).init(allocator),
-            .current_edges = std.ArrayList(EdgeSegment).init(allocator),
+            .contours = .{},
+            .current_edges = .{},
         };
     }
 
     pub fn deinit(self: *Interpreter) void {
         // Free any edges in current_edges that weren't finalized
-        self.current_edges.deinit();
+        self.current_edges.deinit(self.allocator);
 
         // Free all contours
         for (self.contours.items) |*c| {
             c.deinit();
         }
-        self.contours.deinit();
+        self.contours.deinit(self.allocator);
     }
 
     /// Interpret a CharString and return the resulting Shape.
@@ -701,7 +701,7 @@ pub const Interpreter = struct {
             Vec2.init(self.x, self.y),
             Vec2.init(x, y),
         );
-        self.current_edges.append(.{ .linear = segment }) catch return CharStringError.OutOfMemory;
+        self.current_edges.append(self.allocator, .{ .linear = segment }) catch return CharStringError.OutOfMemory;
         self.x = x;
         self.y = y;
     }
@@ -717,7 +717,7 @@ pub const Interpreter = struct {
             Vec2.init(x2, y2),
             Vec2.init(x3, y3),
         );
-        self.current_edges.append(.{ .cubic = segment }) catch return CharStringError.OutOfMemory;
+        self.current_edges.append(self.allocator, .{ .cubic = segment }) catch return CharStringError.OutOfMemory;
         self.x = x3;
         self.y = y3;
     }
@@ -732,15 +732,15 @@ pub const Interpreter = struct {
         }
 
         // Create contour from edges
-        const edges = self.current_edges.toOwnedSlice() catch return CharStringError.OutOfMemory;
+        const edges = self.current_edges.toOwnedSlice(self.allocator) catch return CharStringError.OutOfMemory;
         const contour = Contour.fromEdges(self.allocator, edges);
-        self.contours.append(contour) catch return CharStringError.OutOfMemory;
+        self.contours.append(self.allocator, contour) catch return CharStringError.OutOfMemory;
 
         self.path_started = false;
     }
 
     fn buildShape(self: *Interpreter) CharStringError!Shape {
-        const contours = self.contours.toOwnedSlice() catch return CharStringError.OutOfMemory;
+        const contours = self.contours.toOwnedSlice(self.allocator) catch return CharStringError.OutOfMemory;
         return Shape.fromContours(self.allocator, contours);
     }
 
