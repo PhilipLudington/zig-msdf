@@ -208,33 +208,19 @@ pub fn generateMsdf(
             const point = transform.pixelToShape(@floatFromInt(x), @floatFromInt(y));
 
             // Compute per-channel distances
+            // Each channel gets its sign from the closest edge of that color.
+            // This preserves the per-edge sign information that MSDF needs for sharp corners.
+            // At corners where edges of different colors meet, channels will have DIFFERENT
+            // signs - this disagreement is what allows median(R,G,B) to reconstruct sharp corners.
+            //
+            // The edge sign convention for TrueType fonts (CW outer contours, Y-up):
+            // - Inside points → negative distance
+            // - Outside points → positive distance
+            // This matches MSDF convention, so use distances directly.
             const distances = computeChannelDistances(shape, point);
-
-            // Determine inside/outside using winding number
-            const winding = computeWinding(shape, point);
-            const inside = winding != 0;
-
-            // Apply sign based on inside/outside
-            // If inside, distances should be negative (or we negate positive distances)
-            // If outside, distances should be positive
-            var r_dist = distances[0];
-            var g_dist = distances[1];
-            var b_dist = distances[2];
-
-            // The edge signedDistance methods return positive for points "outside"
-            // the edge's left side. For proper inside/outside determination with
-            // the winding rule, we need to ensure the sign matches.
-            if (inside) {
-                // Point is inside - distances should be negative
-                r_dist = -@abs(r_dist);
-                g_dist = -@abs(g_dist);
-                b_dist = -@abs(b_dist);
-            } else {
-                // Point is outside - distances should be positive
-                r_dist = @abs(r_dist);
-                g_dist = @abs(g_dist);
-                b_dist = @abs(b_dist);
-            }
+            const r_dist = distances[0];
+            const g_dist = distances[1];
+            const b_dist = distances[2];
 
             // Convert to pixel values
             const r = distanceToPixel(r_dist, range);

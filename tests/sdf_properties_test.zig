@@ -198,13 +198,14 @@ fn computeSdfStats(
     };
 }
 
-/// Create a square shape for testing.
+/// Create a square shape for testing (CW winding order).
 fn createSquareShape(allocator: std.mem.Allocator) !Shape {
     var edges = try allocator.alloc(EdgeSegment, 4);
-    edges[0] = EdgeSegment{ .linear = LinearSegment.init(Vec2.init(10, 10), Vec2.init(90, 10)) };
-    edges[1] = EdgeSegment{ .linear = LinearSegment.init(Vec2.init(90, 10), Vec2.init(90, 90)) };
-    edges[2] = EdgeSegment{ .linear = LinearSegment.init(Vec2.init(90, 90), Vec2.init(10, 90)) };
-    edges[3] = EdgeSegment{ .linear = LinearSegment.init(Vec2.init(10, 90), Vec2.init(10, 10)) };
+    // CW winding order (matches TrueType convention): up, right, down, left
+    edges[0] = EdgeSegment{ .linear = LinearSegment.init(Vec2.init(10, 10), Vec2.init(10, 90)) };
+    edges[1] = EdgeSegment{ .linear = LinearSegment.init(Vec2.init(10, 90), Vec2.init(90, 90)) };
+    edges[2] = EdgeSegment{ .linear = LinearSegment.init(Vec2.init(90, 90), Vec2.init(90, 10)) };
+    edges[3] = EdgeSegment{ .linear = LinearSegment.init(Vec2.init(90, 10), Vec2.init(10, 10)) };
 
     var contours = try allocator.alloc(Contour, 1);
     contours[0] = Contour.fromEdges(allocator, edges);
@@ -212,7 +213,7 @@ fn createSquareShape(allocator: std.mem.Allocator) !Shape {
     return Shape.fromContours(allocator, contours);
 }
 
-/// Create a circle-like shape (polygon approximation) for testing.
+/// Create a circle-like shape (polygon approximation) for testing (CW winding order).
 fn createCircleShape(allocator: std.mem.Allocator, num_segments: usize) !Shape {
     var edges = try allocator.alloc(EdgeSegment, num_segments);
 
@@ -221,8 +222,9 @@ fn createCircleShape(allocator: std.mem.Allocator, num_segments: usize) !Shape {
     const radius: f64 = 40;
 
     for (0..num_segments) |i| {
-        const angle1 = @as(f64, @floatFromInt(i)) * 2.0 * std.math.pi / @as(f64, @floatFromInt(num_segments));
-        const angle2 = @as(f64, @floatFromInt(i + 1)) * 2.0 * std.math.pi / @as(f64, @floatFromInt(num_segments));
+        // Use negative angles for CW winding order
+        const angle1 = -@as(f64, @floatFromInt(i)) * 2.0 * std.math.pi / @as(f64, @floatFromInt(num_segments));
+        const angle2 = -@as(f64, @floatFromInt(i + 1)) * 2.0 * std.math.pi / @as(f64, @floatFromInt(num_segments));
 
         const p1 = Vec2.init(center_x + radius * @cos(angle1), center_y + radius * @sin(angle1));
         const p2 = Vec2.init(center_x + radius * @cos(angle2), center_y + radius * @sin(angle2));
@@ -238,14 +240,14 @@ fn createCircleShape(allocator: std.mem.Allocator, num_segments: usize) !Shape {
 
 /// Create an L-shaped polygon for testing non-convex shapes.
 fn createLShape(allocator: std.mem.Allocator) !Shape {
-    // L-shape vertices (clockwise for proper winding)
+    // L-shape vertices (CW winding order for proper sign convention)
     const points = [_]Vec2{
         Vec2.init(10, 10),
-        Vec2.init(50, 10),
-        Vec2.init(50, 50),
-        Vec2.init(90, 50),
-        Vec2.init(90, 90),
         Vec2.init(10, 90),
+        Vec2.init(90, 90),
+        Vec2.init(90, 50),
+        Vec2.init(50, 50),
+        Vec2.init(50, 10),
     };
 
     var edges = try allocator.alloc(EdgeSegment, points.len);
