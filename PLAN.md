@@ -49,18 +49,18 @@ A pure Zig library for generating Multi-channel Signed Distance Fields from True
 
 ## Phase 5: TrueType Parser - Simple Tables
 
-- [ ] Implement `src/truetype/head_maxp.zig`:
-  - [ ] `HeadTable` struct (units_per_em, index_to_loc_format, bounding box)
-  - [ ] `parseHead()` function
-  - [ ] `MaxpTable` struct (num_glyphs)
-  - [ ] `parseMaxp()` function
+- [x] Implement `src/truetype/head_maxp.zig`:
+  - [x] `HeadTable` struct (units_per_em, index_to_loc_format, bounding box)
+  - [x] `HeadTable.parse()` method
+  - [x] `MaxpTable` struct (num_glyphs)
+  - [x] `MaxpTable.parse()` method
 
-- [ ] Implement `src/truetype/hhea_hmtx.zig`:
-  - [ ] `HheaTable` struct (ascent, descent, line_gap, num_of_long_hor_metrics)
-  - [ ] `parseHhea()` function
-  - [ ] `HmtxTable` struct
-  - [ ] `getAdvanceWidth()` function
-  - [ ] `getLeftSideBearing()` function
+- [x] Implement `src/truetype/hhea_hmtx.zig`:
+  - [x] `HheaTable` struct (ascent, descent, line_gap, num_of_long_hor_metrics)
+  - [x] `HheaTable.parse()` method
+  - [x] `HmtxTable` struct
+  - [x] `HmtxTable.getAdvanceWidth()` method
+  - [x] `HmtxTable.getLeftSideBearing()` method
 
 ## Phase 6: TrueType Parser - Character Mapping
 
@@ -222,4 +222,4 @@ Phase 7 (glyf) ─────────┤            │
 
 ## Current Status
 
-**Phase 4 complete** - Ready to begin Phase 5 (TrueType Parser - Simple Tables).
+**Phase 5 complete** - Ready to begin Phase 6 (TrueType Parser - Character Mapping).
