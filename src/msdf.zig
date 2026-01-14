@@ -29,10 +29,10 @@ pub const generate = @import("generator/generate.zig");
 // TrueType parser modules
 pub const truetype_parser = @import("truetype/parser.zig");
 pub const truetype_tables = @import("truetype/tables.zig");
-// pub const glyf = @import("truetype/glyf.zig");
-// pub const cmap = @import("truetype/cmap.zig");
-// pub const hhea_hmtx = @import("truetype/hhea_hmtx.zig");
-// pub const head_maxp = @import("truetype/head_maxp.zig");
+pub const glyf = @import("truetype/glyf.zig");
+pub const cmap = @import("truetype/cmap.zig");
+pub const hhea_hmtx = @import("truetype/hhea_hmtx.zig");
+pub const head_maxp = @import("truetype/head_maxp.zig");
 
 /// Options for generating a single glyph MSDF.
 pub const GenerateOptions = struct {
@@ -118,15 +118,125 @@ pub const AtlasResult = struct {
 /// A parsed TrueType font.
 pub const Font = truetype_parser.Font;
 
+/// Errors that can occur during MSDF generation.
+pub const MsdfError = error{
+    /// A required font table is missing.
+    MissingTable,
+    /// The font data is invalid or corrupted.
+    InvalidFontData,
+    /// Memory allocation failed.
+    OutOfMemory,
+    /// The requested glyph is not in the font.
+    GlyphNotFound,
+    /// The font format is not supported.
+    UnsupportedFormat,
+};
+
 /// Generate an MSDF texture for a single glyph.
+///
+/// Parameters:
+/// - allocator: Allocator for output bitmap and intermediate data.
+/// - font: The TrueType font to use.
+/// - codepoint: Unicode codepoint of the character to render.
+/// - options: Generation options (size, padding, range).
+///
+/// Returns an MsdfResult containing the MSDF texture and glyph metrics.
+/// Caller owns the returned result and must call `deinit()` to free it.
 pub fn generateGlyph(
-    _: std.mem.Allocator,
-    _: Font,
-    _: u21,
-    _: GenerateOptions,
-) !MsdfResult {
-    // TODO: Implement glyph generation
-    return error.NotImplemented;
+    allocator: std.mem.Allocator,
+    font: Font,
+    codepoint: u21,
+    options: GenerateOptions,
+) MsdfError!MsdfResult {
+    // Parse required tables
+    const head_data = font.getTableData("head") orelse return MsdfError.MissingTable;
+    const head = head_maxp.HeadTable.parse(head_data) catch return MsdfError.InvalidFontData;
+
+    const maxp_data = font.getTableData("maxp") orelse return MsdfError.MissingTable;
+    const maxp = head_maxp.MaxpTable.parse(maxp_data) catch return MsdfError.InvalidFontData;
+
+    _ = font.getTableData("cmap") orelse return MsdfError.MissingTable;
+    const cmap_table_offset = font.findTable("cmap").?.offset;
+    const cmap_table = cmap.CmapTable.parse(font.data, cmap_table_offset) catch return MsdfError.InvalidFontData;
+
+    const hhea_data = font.getTableData("hhea") orelse return MsdfError.MissingTable;
+    const hhea = hhea_hmtx.HheaTable.parse(hhea_data) catch return MsdfError.InvalidFontData;
+
+    const hmtx_data = font.getTableData("hmtx") orelse return MsdfError.MissingTable;
+    const hmtx = hhea_hmtx.HmtxTable.init(hmtx_data, hhea.num_of_long_hor_metrics, maxp.num_glyphs) catch return MsdfError.InvalidFontData;
+
+    const loca_table = font.findTable("loca") orelse return MsdfError.MissingTable;
+    const glyf_table = font.findTable("glyf") orelse return MsdfError.MissingTable;
+
+    // Look up glyph index from codepoint
+    const glyph_index = cmap_table.getGlyphIndex(codepoint) catch return MsdfError.InvalidFontData;
+
+    // Parse glyph outline
+    var shape = glyf.parseGlyph(
+        allocator,
+        font.data,
+        loca_table.offset,
+        glyf_table.offset,
+        glyph_index,
+        maxp.num_glyphs,
+        head.usesLongLocaFormat(),
+    ) catch return MsdfError.InvalidFontData;
+    defer shape.deinit();
+
+    // Get glyph metrics
+    const advance_width = hmtx.getAdvanceWidth(glyph_index) catch return MsdfError.InvalidFontData;
+    const left_side_bearing = hmtx.getLeftSideBearing(glyph_index) catch return MsdfError.InvalidFontData;
+
+    // Calculate glyph bounding box
+    const shape_bounds = shape.bounds();
+    const units_per_em: f64 = @floatFromInt(head.units_per_em);
+
+    // Apply edge coloring for MSDF
+    coloring.colorEdgesSimple(&shape);
+
+    // Calculate transform to fit glyph in output size with padding
+    const size = options.size;
+    const padding = options.padding;
+
+    // Calculate the distance range in font units
+    // The range in the output should map to options.range pixels
+    const available_size = size - 2 * padding;
+    const scale_factor = @as(f64, @floatFromInt(available_size)) / units_per_em;
+    const range_in_font_units = options.range / scale_factor;
+
+    // Calculate transform
+    const transform = generate.calculateTransform(
+        shape_bounds,
+        size,
+        size,
+        padding,
+    );
+
+    // Generate MSDF
+    const bitmap = generate.generateMsdf(
+        allocator,
+        shape,
+        size,
+        size,
+        range_in_font_units,
+        transform,
+    ) catch return MsdfError.OutOfMemory;
+
+    // Calculate metrics (normalized to font units, caller can scale as needed)
+    const metrics = GlyphMetrics{
+        .advance_width = @as(f32, @floatFromInt(advance_width)) / @as(f32, @floatFromInt(head.units_per_em)),
+        .bearing_x = @as(f32, @floatFromInt(left_side_bearing)) / @as(f32, @floatFromInt(head.units_per_em)),
+        .bearing_y = @as(f32, @floatCast(shape_bounds.max.y)) / @as(f32, @floatFromInt(head.units_per_em)),
+        .width = @as(f32, @floatCast(shape_bounds.width())) / @as(f32, @floatFromInt(head.units_per_em)),
+        .height = @as(f32, @floatCast(shape_bounds.height())) / @as(f32, @floatFromInt(head.units_per_em)),
+    };
+
+    return MsdfResult{
+        .pixels = bitmap.pixels,
+        .width = bitmap.width,
+        .height = bitmap.height,
+        .metrics = metrics,
+    };
 }
 
 /// Generate an MSDF atlas for multiple glyphs.

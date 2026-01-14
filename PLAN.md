@@ -121,17 +121,17 @@ A pure Zig library for generating Multi-channel Signed Distance Fields from True
 
 ## Phase 10: High-Level Public API
 
-- [ ] Complete `src/msdf.zig`:
-  - [ ] Re-export `Font` type
-  - [ ] `GenerateOptions` struct (size, padding, range)
-  - [ ] `generateGlyph()` - generate MSDF for single character:
-    - [ ] Look up glyph index from codepoint
-    - [ ] Parse glyph outline
-    - [ ] Apply edge coloring
-    - [ ] Calculate scale and translation from options
-    - [ ] Generate MSDF
-    - [ ] Return MsdfResult with metrics
-  - [ ] `GlyphMetrics` struct (advance_width, bearing_x, bearing_y, width, height)
+- [x] Complete `src/msdf.zig`:
+  - [x] Re-export `Font` type
+  - [x] `GenerateOptions` struct (size, padding, range)
+  - [x] `generateGlyph()` - generate MSDF for single character:
+    - [x] Look up glyph index from codepoint
+    - [x] Parse glyph outline
+    - [x] Apply edge coloring
+    - [x] Calculate scale and translation from options
+    - [x] Generate MSDF
+    - [x] Return MsdfResult with metrics
+  - [x] `GlyphMetrics` struct (advance_width, bearing_x, bearing_y, width, height)
 
 ## Phase 11: Atlas Generation
 
@@ -224,4 +224,4 @@ Phase 7 (glyf) ─────────┤            │
 
 ## Current Status
 
-**Phase 9 complete** - Ready to begin Phase 10 (High-Level Public API).
+**Phase 10 complete** - Ready to begin Phase 11 (Atlas Generation).
