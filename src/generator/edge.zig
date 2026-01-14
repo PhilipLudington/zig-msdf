@@ -596,3 +596,90 @@ test "QuadraticSegment.bounds" {
     try std.testing.expectApproxEqAbs(@as(f64, 10), b.max.x, 1e-10);
     try std.testing.expectApproxEqAbs(@as(f64, 5), b.max.y, 1e-10);
 }
+
+test "QuadraticSegment.signedDistance - point on curve" {
+    const seg = QuadraticSegment.init(Vec2.init(0, 0), Vec2.init(5, 10), Vec2.init(10, 0));
+
+    // Point exactly on the curve at t=0.5 (which is at (5, 5))
+    const d = seg.signedDistance(Vec2.init(5, 5));
+    try std.testing.expectApproxEqAbs(@as(f64, 0), @abs(d.distance), 1e-6);
+}
+
+test "QuadraticSegment.signedDistance - point above curve" {
+    const seg = QuadraticSegment.init(Vec2.init(0, 0), Vec2.init(5, 10), Vec2.init(10, 0));
+
+    // Point above the curve peak - should have positive distance
+    const d = seg.signedDistance(Vec2.init(5, 8));
+    try std.testing.expect(d.distance > 0);
+    // Distance should be approximately 3 (from (5,5) to (5,8))
+    try std.testing.expectApproxEqAbs(@as(f64, 3), @abs(d.distance), 0.1);
+}
+
+test "QuadraticSegment.signedDistance - point at endpoint" {
+    const seg = QuadraticSegment.init(Vec2.init(0, 0), Vec2.init(5, 10), Vec2.init(10, 0));
+
+    // Point at start endpoint
+    const d = seg.signedDistance(Vec2.init(0, 0));
+    try std.testing.expectApproxEqAbs(@as(f64, 0), @abs(d.distance), 1e-10);
+}
+
+test "CubicSegment.signedDistance - point on curve" {
+    const seg = CubicSegment.init(
+        Vec2.init(0, 0),
+        Vec2.init(0, 10),
+        Vec2.init(10, 10),
+        Vec2.init(10, 0),
+    );
+
+    // Point at t=0.5 (which is at (5, 7.5))
+    const d = seg.signedDistance(Vec2.init(5, 7.5));
+    try std.testing.expectApproxEqAbs(@as(f64, 0), @abs(d.distance), 1e-4);
+}
+
+test "CubicSegment.signedDistance - point at endpoint" {
+    const seg = CubicSegment.init(
+        Vec2.init(0, 0),
+        Vec2.init(0, 10),
+        Vec2.init(10, 10),
+        Vec2.init(10, 0),
+    );
+
+    // Point at start endpoint
+    const d1 = seg.signedDistance(Vec2.init(0, 0));
+    try std.testing.expectApproxEqAbs(@as(f64, 0), @abs(d1.distance), 1e-10);
+
+    // Point at end endpoint
+    const d2 = seg.signedDistance(Vec2.init(10, 0));
+    try std.testing.expectApproxEqAbs(@as(f64, 0), @abs(d2.distance), 1e-10);
+}
+
+test "CubicSegment.signedDistance - point away from curve" {
+    const seg = CubicSegment.init(
+        Vec2.init(0, 0),
+        Vec2.init(0, 10),
+        Vec2.init(10, 10),
+        Vec2.init(10, 0),
+    );
+
+    // Point far from the curve
+    const d = seg.signedDistance(Vec2.init(5, 20));
+    // Should have a significant positive distance
+    try std.testing.expect(@abs(d.distance) > 10);
+}
+
+test "CubicSegment.bounds" {
+    const seg = CubicSegment.init(
+        Vec2.init(0, 0),
+        Vec2.init(0, 10),
+        Vec2.init(10, 10),
+        Vec2.init(10, 0),
+    );
+    const b = seg.bounds();
+
+    // Endpoints are at (0,0) and (10,0)
+    try std.testing.expectApproxEqAbs(@as(f64, 0), b.min.x, 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), b.min.y, 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 10), b.max.x, 1e-10);
+    // Max y should be at the curve peak (around 7.5)
+    try std.testing.expectApproxEqAbs(@as(f64, 7.5), b.max.y, 0.1);
+}

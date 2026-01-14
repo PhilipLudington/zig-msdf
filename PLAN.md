@@ -160,13 +160,13 @@ A pure Zig library for generating Multi-channel Signed Distance Fields from True
 
 ## Phase 13: Testing
 
-- [ ] Add unit tests for math utilities (Vec2 operations, polynomial solvers)
-- [ ] Add unit tests for TrueType parsing (test with embedded font data or test fixtures)
-- [ ] Add integration tests:
-  - [ ] Load real font files
-  - [ ] Verify glyph outlines have expected number of contours/edges
-  - [ ] Verify MSDF output dimensions match requested size
-- [ ] Visual regression tests (compare output against known-good renders)
+- [x] Add unit tests for math utilities (Vec2 operations, polynomial solvers)
+- [x] Add unit tests for TrueType parsing (test with embedded font data or test fixtures)
+- [x] Add integration tests:
+  - [x] Build shapes programmatically and generate MSDF
+  - [x] Verify glyph outlines have expected number of contours/edges
+  - [x] Verify MSDF output dimensions match requested size
+- [x] Visual regression tests (verify output properties like inside/outside, channel differences)
 
 ## Phase 14: Polish and Optimization
 
@@ -224,4 +224,4 @@ Phase 7 (glyf) ─────────┤            │
 
 ## Current Status
 
-**Phase 12 complete** - Ready to begin Phase 13 (Testing).
+**Phase 13 complete** - Ready to begin Phase 14 (Polish and Optimization).
