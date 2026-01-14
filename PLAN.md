@@ -73,27 +73,27 @@ A pure Zig library for generating Multi-channel Signed Distance Fields from True
 
 ## Phase 7: TrueType Parser - Glyph Outlines
 
-- [ ] Implement `src/truetype/glyf.zig`:
-  - [ ] `getGlyphOffset()` - use loca table to find glyph data location
-  - [ ] `parseGlyph()` - entry point, dispatch to simple or compound
-  - [ ] `parseSimpleGlyph()`:
-    - [ ] Parse end points of contours
-    - [ ] Skip instructions
-    - [ ] Parse RLE-compressed flags
-    - [ ] Parse delta-encoded X coordinates
-    - [ ] Parse delta-encoded Y coordinates
-  - [ ] `buildShape()` - convert point arrays to Shape with contours
-  - [ ] `buildContour()` - convert points to edge segments, handling:
-    - [ ] On-curve to on-curve (linear segments)
-    - [ ] On-curve to off-curve to on-curve (quadratic segments)
-    - [ ] Consecutive off-curve points (implicit on-curve at midpoint)
-  - [ ] `parseCompoundGlyph()`:
-    - [ ] Parse component flags and glyph indices
-    - [ ] Parse translation arguments (1 or 2 byte formats)
-    - [ ] Parse transformation matrix (scale, xy-scale, or 2x2)
-    - [ ] Recursively parse component glyphs
-    - [ ] Apply transformations to component points
-    - [ ] Merge all components into single Shape
+- [x] Implement `src/truetype/glyf.zig`:
+  - [x] `getGlyphOffset()` - use loca table to find glyph data location
+  - [x] `parseGlyph()` - entry point, dispatch to simple or compound
+  - [x] `parseSimpleGlyph()`:
+    - [x] Parse end points of contours
+    - [x] Skip instructions
+    - [x] Parse RLE-compressed flags
+    - [x] Parse delta-encoded X coordinates
+    - [x] Parse delta-encoded Y coordinates
+  - [x] `buildShape()` - convert point arrays to Shape with contours
+  - [x] `buildContour()` - convert points to edge segments, handling:
+    - [x] On-curve to on-curve (linear segments)
+    - [x] On-curve to off-curve to on-curve (quadratic segments)
+    - [x] Consecutive off-curve points (implicit on-curve at midpoint)
+  - [x] `parseCompoundGlyph()`:
+    - [x] Parse component flags and glyph indices
+    - [x] Parse translation arguments (1 or 2 byte formats)
+    - [x] Parse transformation matrix (scale, xy-scale, or 2x2)
+    - [x] Recursively parse component glyphs
+    - [x] Apply transformations to component points
+    - [x] Merge all components into single Shape
 
 ## Phase 8: Edge Coloring Algorithm
 
@@ -222,4 +222,4 @@ Phase 7 (glyf) ─────────┤            │
 
 ## Current Status
 
-**Phase 6 complete** - Ready to begin Phase 7 (TrueType Parser - Glyph Outlines).
+**Phase 7 complete** - Ready to begin Phase 8 (Edge Coloring Algorithm).
