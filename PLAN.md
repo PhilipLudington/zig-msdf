@@ -64,12 +64,12 @@ A pure Zig library for generating Multi-channel Signed Distance Fields from True
 
 ## Phase 6: TrueType Parser - Character Mapping
 
-- [ ] Implement `src/truetype/cmap.zig`:
-  - [ ] `CmapTable` struct (subtable_offset, format)
-  - [ ] `parseCmap()` - find best Unicode subtable (prefer format 12, fallback to format 4)
-  - [ ] `getGlyphIndex()` - map codepoint to glyph index
-  - [ ] `getGlyphIndexFormat4()` - BMP character lookup via segment search
-  - [ ] `getGlyphIndexFormat12()` - full Unicode lookup via binary search
+- [x] Implement `src/truetype/cmap.zig`:
+  - [x] `CmapTable` struct (subtable_offset, format)
+  - [x] `parseCmap()` - find best Unicode subtable (prefer format 12, fallback to format 4)
+  - [x] `getGlyphIndex()` - map codepoint to glyph index
+  - [x] `getGlyphIndexFormat4()` - BMP character lookup via segment search
+  - [x] `getGlyphIndexFormat12()` - full Unicode lookup via binary search
 
 ## Phase 7: TrueType Parser - Glyph Outlines
 
@@ -222,4 +222,4 @@ Phase 7 (glyf) ─────────┤            │
 
 ## Current Status
 
-**Phase 5 complete** - Ready to begin Phase 6 (TrueType Parser - Character Mapping).
+**Phase 6 complete** - Ready to begin Phase 7 (TrueType Parser - Glyph Outlines).
