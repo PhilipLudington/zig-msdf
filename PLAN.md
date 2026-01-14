@@ -135,15 +135,15 @@ A pure Zig library for generating Multi-channel Signed Distance Fields from True
 
 ## Phase 11: Atlas Generation
 
-- [ ] Add atlas support to `src/msdf.zig`:
-  - [ ] `AtlasOptions` struct (chars, glyph_size, padding, range)
-  - [ ] `AtlasGlyph` struct (UV coordinates, metrics)
-  - [ ] `AtlasResult` struct (pixels RGBA8, dimensions, glyph map)
-  - [ ] `generateAtlas()` function:
-    - [ ] Generate MSDF for each character
-    - [ ] Pack glyphs into atlas texture (simple row-based or shelf packing)
-    - [ ] Calculate UV coordinates for each glyph
-    - [ ] Return combined result
+- [x] Add atlas support to `src/msdf.zig`:
+  - [x] `AtlasOptions` struct (chars, glyph_size, padding, range)
+  - [x] `AtlasGlyph` struct (UV coordinates, metrics)
+  - [x] `AtlasResult` struct (pixels RGBA8, dimensions, glyph map)
+  - [x] `generateAtlas()` function:
+    - [x] Generate MSDF for each character
+    - [x] Pack glyphs into atlas texture (simple row-based or shelf packing)
+    - [x] Calculate UV coordinates for each glyph
+    - [x] Return combined result
 
 ## Phase 12: Examples
 
@@ -224,4 +224,4 @@ Phase 7 (glyf) ─────────┤            │
 
 ## Current Status
 
-**Phase 10 complete** - Ready to begin Phase 11 (Atlas Generation).
+**Phase 11 complete** - Ready to begin Phase 12 (Examples).
