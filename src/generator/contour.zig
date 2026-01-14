@@ -174,13 +174,15 @@ pub const Shape = struct {
     /// Normalize the shape orientation so outer contours are CCW
     /// and inner contours (holes) are CW.
     pub fn normalize(self: *Shape) void {
-        // For TrueType fonts, the convention is:
-        // - Outer contours are clockwise (negative winding in our calculation)
-        // - Inner contours (holes) are counter-clockwise
+        // For TrueType fonts with Y-up coordinates, the convention is:
+        // - Outer contours are counter-clockwise (CCW, positive winding)
+        // - Inner contours (holes) are clockwise (CW, negative winding)
         //
-        // We don't actually need to reverse edges here; the winding
-        // information is used during MSDF generation to determine
-        // inside/outside based on the non-zero winding rule.
+        // The edge sign calculation in edge.zig handles this automatically:
+        // - CCW edges: left side (inside glyph) → negative distance
+        // - CW edges: right side (inside hole = outside glyph) → positive distance
+        //
+        // No normalization is needed as long as the font follows TrueType conventions.
         _ = self;
     }
 };

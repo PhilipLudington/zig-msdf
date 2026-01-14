@@ -73,6 +73,7 @@ pub const LinearSegment = struct {
         const dist = d.length();
 
         // Determine sign using cross product (inside/outside)
+        // Convention matches msdfgen: cross < 0 means inside → negative distance
         const sign: f64 = if (dir.cross(aq) < 0) -1.0 else 1.0;
 
         // Orthogonality: how perpendicular is the distance vector to the edge
@@ -180,6 +181,7 @@ pub const QuadraticSegment = struct {
         const dist = d.length();
 
         // Determine sign using cross product with tangent
+        // Convention matches msdfgen: cross < 0 means inside → negative distance
         const tangent = self.direction(t);
         const sign: f64 = if (tangent.cross(d) < 0) -1.0 else 1.0;
 
@@ -333,6 +335,8 @@ pub const CubicSegment = struct {
         const d = origin.sub(closest);
         const dist = @sqrt(best_dist_sq);
 
+        // Determine sign using cross product with tangent
+        // Convention matches msdfgen: cross < 0 means inside → negative distance
         const tangent = self.direction(best_t);
         const sign: f64 = if (tangent.cross(d) < 0) -1.0 else 1.0;
 
@@ -501,13 +505,15 @@ test "LinearSegment.point" {
 }
 
 test "LinearSegment.signedDistance" {
+    // Edge going left-to-right along X axis: (0,0) -> (10,0)
+    // Sign convention matches msdfgen reference implementation
     const seg = LinearSegment.init(Vec2.init(0, 0), Vec2.init(10, 0));
 
-    // Point above the line (should be positive, outside)
+    // Point above the line - positive distance (outside in msdfgen convention)
     const d1 = seg.signedDistance(Vec2.init(5, 3));
     try std.testing.expectApproxEqAbs(@as(f64, 3), d1.distance, 1e-10);
 
-    // Point below the line (should be negative, inside for CCW contour)
+    // Point below the line - negative distance (inside in msdfgen convention)
     const d2 = seg.signedDistance(Vec2.init(5, -3));
     try std.testing.expectApproxEqAbs(@as(f64, -3), d2.distance, 1e-10);
 
@@ -606,9 +612,11 @@ test "QuadraticSegment.signedDistance - point on curve" {
 }
 
 test "QuadraticSegment.signedDistance - point above curve" {
+    // Curve goes from (0,0) to (10,0) with control point at (5,10)
+    // Peak is around (5,5). Sign convention matches msdfgen reference.
     const seg = QuadraticSegment.init(Vec2.init(0, 0), Vec2.init(5, 10), Vec2.init(10, 0));
 
-    // Point above the curve peak - should have positive distance
+    // Point above the curve peak - positive distance in msdfgen convention
     const d = seg.signedDistance(Vec2.init(5, 8));
     try std.testing.expect(d.distance > 0);
     // Distance should be approximately 3 (from (5,5) to (5,8))

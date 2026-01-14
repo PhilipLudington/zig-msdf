@@ -213,9 +213,9 @@ pub fn generateMsdf(
             // At corners where edges of different colors meet, channels will have DIFFERENT
             // signs - this disagreement is what allows median(R,G,B) to reconstruct sharp corners.
             //
-            // The edge sign convention for TrueType fonts (CW outer contours, Y-up):
-            // - Inside points → negative distance
-            // - Outside points → positive distance
+            // The edge sign convention for TrueType fonts (CCW outer contours, CW inner/holes, Y-up):
+            // - Inside glyph → negative distance → bright pixels
+            // - Outside glyph → positive distance → dark pixels
             // This matches MSDF convention, so use distances directly.
             const distances = computeChannelDistances(shape, point);
             const r_dist = distances[0];

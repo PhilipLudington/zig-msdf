@@ -179,4 +179,36 @@ pub fn build(b: *std.Build) void {
 
     const run_sdf_properties_tests = b.addRunArtifact(sdf_properties_tests);
     test_step.dependOn(&run_sdf_properties_tests.step);
+
+    // Debug inner contour test (separate step)
+    const debug_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_inner_contour.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+
+    const run_debug_tests = b.addRunArtifact(debug_tests);
+    const debug_step = b.step("debug-test", "Run debug inner contour test");
+    debug_step.dependOn(&run_debug_tests.step);
+
+    // Debug contour structure test
+    const contour_debug_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_contours.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+
+    const run_contour_debug = b.addRunArtifact(contour_debug_tests);
+    const contour_step = b.step("debug-contours", "Run contour structure debug test");
+    contour_step.dependOn(&run_contour_debug.step);
 }

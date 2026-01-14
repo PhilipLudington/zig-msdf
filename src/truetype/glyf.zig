@@ -394,7 +394,10 @@ fn buildContour(allocator: std.mem.Allocator, points: []const GlyphPoint) ParseE
                     advance = 1; // Only advance by 1, the implicit point becomes current
                 }
 
-                try edge_list.append(allocator, .{ .quadratic = QuadraticSegment.init(current, control, end_point) });
+                // Skip degenerate edges where start equals end
+                if (!current.approxEqual(end_point, 1e-10)) {
+                    try edge_list.append(allocator, .{ .quadratic = QuadraticSegment.init(current, control, end_point) });
+                }
                 current = end_point;
                 i += advance;
             }
@@ -405,7 +408,10 @@ fn buildContour(allocator: std.mem.Allocator, points: []const GlyphPoint) ParseE
             if (next_point.on_curve) {
                 // Next is on-curve
                 const end_point = Vec2.init(@floatFromInt(next_point.x), @floatFromInt(next_point.y));
-                try edge_list.append(allocator, .{ .quadratic = QuadraticSegment.init(current, control, end_point) });
+                // Skip degenerate edges where start equals end
+                if (!current.approxEqual(end_point, 1e-10)) {
+                    try edge_list.append(allocator, .{ .quadratic = QuadraticSegment.init(current, control, end_point) });
+                }
                 current = end_point;
                 i += 1;
             } else {
@@ -415,7 +421,10 @@ fn buildContour(allocator: std.mem.Allocator, points: []const GlyphPoint) ParseE
                     (control.x + next_control.x) / 2.0,
                     (control.y + next_control.y) / 2.0,
                 );
-                try edge_list.append(allocator, .{ .quadratic = QuadraticSegment.init(current, control, end_point) });
+                // Skip degenerate edges where start equals end
+                if (!current.approxEqual(end_point, 1e-10)) {
+                    try edge_list.append(allocator, .{ .quadratic = QuadraticSegment.init(current, control, end_point) });
+                }
                 current = end_point;
                 i += 1;
             }
