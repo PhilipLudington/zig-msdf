@@ -134,4 +134,34 @@ pub fn build(b: *std.Build) void {
 
     const run_reference_tests = b.addRunArtifact(reference_tests);
     test_step.dependOn(&run_reference_tests.step);
+
+    // Render validation tests
+    const render_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/render_validation_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+
+    const run_render_tests = b.addRunArtifact(render_tests);
+    test_step.dependOn(&run_render_tests.step);
+
+    // Multi-font tests
+    const multi_font_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/multi_font_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+
+    const run_multi_font_tests = b.addRunArtifact(multi_font_tests);
+    test_step.dependOn(&run_multi_font_tests.step);
 }
