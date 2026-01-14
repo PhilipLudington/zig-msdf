@@ -56,7 +56,8 @@ fn colorContour(contour: *Contour, angle_threshold: f64) void {
 
     // Find corners (sharp direction changes between edges)
     // A corner is where the direction changes significantly
-    var corners = std.BoundedArray(usize, 256){};
+    var corners_buffer: [256]usize = undefined;
+    var corners_len: usize = 0;
 
     for (0..edge_count) |i| {
         const prev_idx = if (i == 0) edge_count - 1 else i - 1;
@@ -72,13 +73,16 @@ fn colorContour(contour: *Contour, angle_threshold: f64) void {
         const angle = angleBetween(prev_dir, curr_dir);
 
         if (angle > angle_threshold) {
-            corners.append(i) catch break;
+            if (corners_len < corners_buffer.len) {
+                corners_buffer[corners_len] = i;
+                corners_len += 1;
+            }
         }
     }
 
     // If no corners detected, treat the whole contour as smooth
     // Use simple alternating colors
-    if (corners.len == 0) {
+    if (corners_len == 0) {
         // Smooth contour: use a pattern that ensures adjacent edges differ
         const colors = [_]EdgeColor{ .cyan, .magenta, .yellow };
         for (contour.edges, 0..) |*e, i| {
@@ -89,7 +93,7 @@ fn colorContour(contour: *Contour, angle_threshold: f64) void {
 
     // Color edges between corners
     // Each "smooth segment" between corners gets its own color scheme
-    colorBetweenCorners(contour, corners.slice());
+    colorBetweenCorners(contour, corners_buffer[0..corners_len]);
 }
 
 /// Calculate the angle between two direction vectors (in radians).

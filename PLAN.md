@@ -147,16 +147,16 @@ A pure Zig library for generating Multi-channel Signed Distance Fields from True
 
 ## Phase 12: Examples
 
-- [ ] Create `examples/single_glyph.zig`:
-  - [ ] Load font file
-  - [ ] Generate MSDF for a single character
-  - [ ] Output as PPM image (simple, no dependencies)
+- [x] Create `examples/single_glyph.zig`:
+  - [x] Load font file
+  - [x] Generate MSDF for a single character
+  - [x] Output as PPM image (simple, no dependencies)
 
-- [ ] Create `examples/generate_atlas.zig`:
-  - [ ] Load font file
-  - [ ] Generate atlas for ASCII characters
-  - [ ] Output atlas as PPM image
-  - [ ] Print glyph metrics/UVs to stdout
+- [x] Create `examples/generate_atlas.zig`:
+  - [x] Load font file
+  - [x] Generate atlas for ASCII characters
+  - [x] Output atlas as PPM image
+  - [x] Print glyph metrics/UVs to stdout
 
 ## Phase 13: Testing
 
@@ -224,4 +224,4 @@ Phase 7 (glyf) ─────────┤            │
 
 ## Current Status
 
-**Phase 11 complete** - Ready to begin Phase 12 (Examples).
+**Phase 12 complete** - Ready to begin Phase 13 (Testing).

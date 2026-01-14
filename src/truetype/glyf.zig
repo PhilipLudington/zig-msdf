@@ -300,8 +300,8 @@ fn buildContour(allocator: std.mem.Allocator, points: []const GlyphPoint) ParseE
     // TrueType contours can start with an off-curve point, in which case
     // we need to find or create an on-curve starting point
 
-    var edge_list = std.ArrayList(EdgeSegment).init(allocator);
-    errdefer edge_list.deinit();
+    var edge_list: std.ArrayList(EdgeSegment) = .{};
+    errdefer edge_list.deinit(allocator);
 
     const n = points.len;
 
@@ -352,7 +352,7 @@ fn buildContour(allocator: std.mem.Allocator, points: []const GlyphPoint) ParseE
             if (next_point.on_curve) {
                 // Next is also on-curve: straight line
                 const next_vec = Vec2.init(@floatFromInt(next_point.x), @floatFromInt(next_point.y));
-                try edge_list.append(.{ .linear = LinearSegment.init(current, next_vec) });
+                try edge_list.append(allocator, .{ .linear = LinearSegment.init(current, next_vec) });
                 current = next_vec;
                 i += 1;
             } else {
@@ -376,7 +376,7 @@ fn buildContour(allocator: std.mem.Allocator, points: []const GlyphPoint) ParseE
                     advance = 1; // Only advance by 1, the implicit point becomes current
                 }
 
-                try edge_list.append(.{ .quadratic = QuadraticSegment.init(current, control, end_point) });
+                try edge_list.append(allocator, .{ .quadratic = QuadraticSegment.init(current, control, end_point) });
                 current = end_point;
                 i += advance;
             }
@@ -387,7 +387,7 @@ fn buildContour(allocator: std.mem.Allocator, points: []const GlyphPoint) ParseE
             if (next_point.on_curve) {
                 // Next is on-curve
                 const end_point = Vec2.init(@floatFromInt(next_point.x), @floatFromInt(next_point.y));
-                try edge_list.append(.{ .quadratic = QuadraticSegment.init(current, control, end_point) });
+                try edge_list.append(allocator, .{ .quadratic = QuadraticSegment.init(current, control, end_point) });
                 current = end_point;
                 i += 1;
             } else {
@@ -397,7 +397,7 @@ fn buildContour(allocator: std.mem.Allocator, points: []const GlyphPoint) ParseE
                     (control.x + next_control.x) / 2.0,
                     (control.y + next_control.y) / 2.0,
                 );
-                try edge_list.append(.{ .quadratic = QuadraticSegment.init(current, control, end_point) });
+                try edge_list.append(allocator, .{ .quadratic = QuadraticSegment.init(current, control, end_point) });
                 current = end_point;
                 i += 1;
             }
@@ -420,15 +420,15 @@ fn buildContour(allocator: std.mem.Allocator, points: []const GlyphPoint) ParseE
             // Last point is off-curve, need to close with a curve
             const control = Vec2.init(@floatFromInt(last_point.x), @floatFromInt(last_point.y));
             if (!control.approxEqual(current, 1e-10)) {
-                try edge_list.append(.{ .quadratic = QuadraticSegment.init(current, control, start_point) });
+                try edge_list.append(allocator, .{ .quadratic = QuadraticSegment.init(current, control, start_point) });
             }
         } else if (!current.approxEqual(start_point, 1e-10)) {
             // Close with a straight line
-            try edge_list.append(.{ .linear = LinearSegment.init(current, start_point) });
+            try edge_list.append(allocator, .{ .linear = LinearSegment.init(current, start_point) });
         }
     }
 
-    const edges = edge_list.toOwnedSlice() catch return ParseError.OutOfMemory;
+    const edges = edge_list.toOwnedSlice(allocator) catch return ParseError.OutOfMemory;
     return Contour.fromEdges(allocator, edges);
 }
 
@@ -446,12 +446,12 @@ fn parseCompoundGlyph(
     var offset: usize = 10;
 
     // Collect all contours from components
-    var all_contours = std.ArrayList(Contour).init(allocator);
+    var all_contours: std.ArrayList(Contour) = .{};
     errdefer {
         for (all_contours.items) |*c| {
             c.deinit();
         }
-        all_contours.deinit();
+        all_contours.deinit(allocator);
     }
 
     var has_more_components = true;
@@ -536,7 +536,7 @@ fn parseCompoundGlyph(
             }
 
             const new_contour = Contour.fromEdges(allocator, transformed_edges);
-            all_contours.append(new_contour) catch return ParseError.OutOfMemory;
+            all_contours.append(allocator, new_contour) catch return ParseError.OutOfMemory;
         }
 
         has_more_components = (flags & ComponentFlags.MORE_COMPONENTS) != 0;
@@ -545,7 +545,7 @@ fn parseCompoundGlyph(
     // Skip instructions if present (we already parsed all components)
     // The WE_HAVE_INSTRUCTIONS flag would have been in the last component's flags
 
-    const contours_slice = all_contours.toOwnedSlice() catch return ParseError.OutOfMemory;
+    const contours_slice = all_contours.toOwnedSlice(allocator) catch return ParseError.OutOfMemory;
     return Shape.fromContours(allocator, contours_slice);
 }
 
