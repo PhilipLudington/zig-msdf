@@ -19,18 +19,18 @@ A pure Zig library for generating Multi-channel Signed Distance Fields from True
 
 ## Phase 3: Edge and Shape Types
 
-- [ ] Implement `src/generator/edge.zig`:
-  - [ ] `EdgeColor` enum (cyan, magenta, yellow, white) with `hasRed()`, `hasGreen()`, `hasBlue()` methods
-  - [ ] `LinearSegment` struct with `signedDistance(point: Vec2)` method
-  - [ ] `QuadraticSegment` struct with `signedDistance(point: Vec2)` method
-  - [ ] `CubicSegment` struct with `signedDistance(point: Vec2)` method (for future OpenType CFF support)
-  - [ ] `EdgeSegment` tagged union wrapping all segment types
+- [x] Implement `src/generator/edge.zig`:
+  - [x] `EdgeColor` enum (cyan, magenta, yellow, white) with `hasRed()`, `hasGreen()`, `hasBlue()` methods
+  - [x] `LinearSegment` struct with `signedDistance(point: Vec2)` method
+  - [x] `QuadraticSegment` struct with `signedDistance(point: Vec2)` method
+  - [x] `CubicSegment` struct with `signedDistance(point: Vec2)` method (for future OpenType CFF support)
+  - [x] `EdgeSegment` tagged union wrapping all segment types
 
-- [ ] Implement `src/generator/contour.zig`:
-  - [ ] `Contour` struct containing edge slice
-  - [ ] `winding()` method to determine contour direction
-  - [ ] `Shape` struct containing contour slice
-  - [ ] `bounds()` method for shape bounding box
+- [x] Implement `src/generator/contour.zig`:
+  - [x] `Contour` struct containing edge slice
+  - [x] `winding()` method to determine contour direction
+  - [x] `Shape` struct containing contour slice
+  - [x] `bounds()` method for shape bounding box
 
 ## Phase 4: TrueType Parser - Foundation
 
@@ -222,4 +222,4 @@ Phase 7 (glyf) ─────────┤            │
 
 ## Current Status
 
-**Phase 2 complete** - Ready to begin Phase 3 (Edge and Shape Types).
+**Phase 3 complete** - Ready to begin Phase 4 (TrueType Parser - Foundation).
