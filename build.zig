@@ -119,4 +119,19 @@ pub fn build(b: *std.Build) void {
 
     const run_visual_tests = b.addRunArtifact(visual_tests);
     test_step.dependOn(&run_visual_tests.step);
+
+    // Reference comparison tests (against msdfgen output)
+    const reference_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/reference_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+
+    const run_reference_tests = b.addRunArtifact(reference_tests);
+    test_step.dependOn(&run_reference_tests.step);
 }

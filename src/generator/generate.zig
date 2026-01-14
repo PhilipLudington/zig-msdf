@@ -241,7 +241,8 @@ pub fn generateMsdf(
             const g = distanceToPixel(g_dist, range);
             const b = distanceToPixel(b_dist, range);
 
-            result.setPixel(x, y, .{ r, g, b });
+            // Flip Y when storing: font coordinates have Y-up, images have Y-down
+            result.setPixel(x, height - 1 - y, .{ r, g, b });
         }
     }
 
