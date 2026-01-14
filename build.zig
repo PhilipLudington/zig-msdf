@@ -164,4 +164,19 @@ pub fn build(b: *std.Build) void {
 
     const run_multi_font_tests = b.addRunArtifact(multi_font_tests);
     test_step.dependOn(&run_multi_font_tests.step);
+
+    // SDF properties validation tests
+    const sdf_properties_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/sdf_properties_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+
+    const run_sdf_properties_tests = b.addRunArtifact(sdf_properties_tests);
+    test_step.dependOn(&run_sdf_properties_tests.step);
 }
