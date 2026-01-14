@@ -10,12 +10,12 @@ A pure Zig library for generating Multi-channel Signed Distance Fields from True
 
 ## Phase 2: Core Math Utilities
 
-- [ ] Implement `src/generator/math.zig`:
-  - [ ] `Vec2` struct with operations (add, sub, scale, dot, cross, normalize, distance, lerp)
-  - [ ] `SignedDistance` struct with distance and orthogonality fields
-  - [ ] `Bounds` struct for bounding box calculations
-  - [ ] `solveQuadratic()` - find roots of quadratic equation
-  - [ ] `solveCubic()` - find roots of cubic equation (needed for cubic Bezier distance)
+- [x] Implement `src/generator/math.zig`:
+  - [x] `Vec2` struct with operations (add, sub, scale, dot, cross, normalize, distance, lerp)
+  - [x] `SignedDistance` struct with distance and orthogonality fields
+  - [x] `Bounds` struct for bounding box calculations
+  - [x] `solveQuadratic()` - find roots of quadratic equation
+  - [x] `solveCubic()` - find roots of cubic equation (needed for cubic Bezier distance)
 
 ## Phase 3: Edge and Shape Types
 
@@ -222,4 +222,4 @@ Phase 7 (glyf) ─────────┤            │
 
 ## Current Status
 
-**Phase 1 complete** - Ready to begin Phase 2 (Core Math Utilities).
+**Phase 2 complete** - Ready to begin Phase 3 (Edge and Shape Types).

@@ -19,8 +19,8 @@
 
 const std = @import("std");
 
-// Generator modules (to be implemented)
-// pub const math = @import("generator/math.zig");
+// Generator modules
+pub const math = @import("generator/math.zig");
 // pub const edge = @import("generator/edge.zig");
 // pub const contour = @import("generator/contour.zig");
 // pub const coloring = @import("generator/coloring.zig");
