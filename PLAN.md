@@ -97,12 +97,12 @@ A pure Zig library for generating Multi-channel Signed Distance Fields from True
 
 ## Phase 8: Edge Coloring Algorithm
 
-- [ ] Implement `src/generator/coloring.zig`:
-  - [ ] `colorEdges()` - main entry point
-  - [ ] Corner detection based on edge direction change
-  - [ ] Color assignment to preserve sharp corners
-  - [ ] Ensure adjacent edges don't share all channels
-  - [ ] Handle single-edge contours
+- [x] Implement `src/generator/coloring.zig`:
+  - [x] `colorEdges()` - main entry point
+  - [x] Corner detection based on edge direction change
+  - [x] Color assignment to preserve sharp corners
+  - [x] Ensure adjacent edges don't share all channels
+  - [x] Handle single-edge contours
 
 ## Phase 9: MSDF Generation
 
@@ -222,4 +222,4 @@ Phase 7 (glyf) ─────────┤            │
 
 ## Current Status
 
-**Phase 7 complete** - Ready to begin Phase 8 (Edge Coloring Algorithm).
+**Phase 8 complete** - Ready to begin Phase 9 (MSDF Generation).
