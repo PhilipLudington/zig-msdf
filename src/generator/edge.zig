@@ -196,6 +196,17 @@ pub const QuadraticSegment = struct {
         return current_min;
     }
 
+    /// Get the curvature sign of this quadratic bezier.
+    /// Returns positive for counter-clockwise curvature, negative for clockwise.
+    /// Returns 0 for degenerate (linear) cases.
+    pub fn curvatureSign(self: QuadraticSegment) f64 {
+        // For a quadratic bezier, the curvature sign is constant and determined
+        // by the cross product of the two control legs: (p1-p0) × (p2-p1)
+        const leg1 = self.p1.sub(self.p0);
+        const leg2 = self.p2.sub(self.p1);
+        return leg1.cross(leg2);
+    }
+
     /// Get the bounding box of this segment.
     pub fn bounds(self: QuadraticSegment) Bounds {
         var result = Bounds.empty.include(self.p0).include(self.p2);
@@ -445,6 +456,70 @@ pub const CubicSegment = struct {
     pub fn hasInflectionPoints(self: CubicSegment) bool {
         return self.findInflectionPoints().count > 0;
     }
+
+    /// Split this cubic bezier at parameter t using de Casteljau's algorithm.
+    /// Returns two cubic segments: [0, t] and [t, 1].
+    pub fn splitAt(self: CubicSegment, t: f64) struct { first: CubicSegment, second: CubicSegment } {
+        // De Casteljau's algorithm for cubic bezier subdivision
+        // Level 1: interpolate between adjacent control points
+        const p01 = self.p0.lerp(self.p1, t);
+        const p12 = self.p1.lerp(self.p2, t);
+        const p23 = self.p2.lerp(self.p3, t);
+
+        // Level 2: interpolate between level 1 points
+        const p012 = p01.lerp(p12, t);
+        const p123 = p12.lerp(p23, t);
+
+        // Level 3: the split point
+        const p0123 = p012.lerp(p123, t);
+
+        return .{
+            .first = CubicSegment{
+                .p0 = self.p0,
+                .p1 = p01,
+                .p2 = p012,
+                .p3 = p0123,
+                .color = self.color,
+            },
+            .second = CubicSegment{
+                .p0 = p0123,
+                .p1 = p123,
+                .p2 = p23,
+                .p3 = self.p3,
+                .color = self.color,
+            },
+        };
+    }
+
+    /// Split this cubic bezier at all inflection points.
+    /// Returns 1-3 segments depending on the number of inflection points.
+    pub fn splitAtInflections(self: CubicSegment) struct { segments: [3]CubicSegment, count: u8 } {
+        const inflections = self.findInflectionPoints();
+
+        if (inflections.count == 0) {
+            return .{ .segments = .{ self, undefined, undefined }, .count = 1 };
+        }
+
+        if (inflections.count == 1) {
+            const split = self.splitAt(inflections.points[0]);
+            return .{ .segments = .{ split.first, split.second, undefined }, .count = 2 };
+        }
+
+        // Two inflection points - need to split twice
+        // First split at the first inflection point
+        const split1 = self.splitAt(inflections.points[0]);
+
+        // The second inflection point needs to be remapped to the second segment's parameter space
+        // Original t2 is in [0, 1], but now we need it relative to [t1, 1]
+        // New parameter = (t2 - t1) / (1 - t1)
+        const t1 = inflections.points[0];
+        const t2 = inflections.points[1];
+        const t2_remapped = (t2 - t1) / (1.0 - t1);
+
+        const split2 = split1.second.splitAt(t2_remapped);
+
+        return .{ .segments = .{ split1.first, split2.first, split2.second }, .count = 3 };
+    }
 };
 
 /// A tagged union representing any edge segment type.
@@ -541,6 +616,24 @@ pub const EdgeSegment = union(enum) {
         return switch (self) {
             .cubic => |s| s.hasInflectionPoints(),
             .linear, .quadratic => false,
+        };
+    }
+
+    /// Get the curvature sign of this edge segment.
+    /// For quadratic beziers, returns the constant curvature sign.
+    /// For cubic beziers, returns the curvature sign at the midpoint.
+    /// For linear segments, returns 0.
+    pub fn curvatureSign(self: EdgeSegment) f64 {
+        return switch (self) {
+            .quadratic => |s| s.curvatureSign(),
+            .cubic => |s| {
+                // For cubics, calculate curvature at midpoint
+                // This is an approximation - cubics can have varying curvature
+                const d1 = s.direction(0.5);
+                const d2 = s.secondDerivative(0.5);
+                return d1.cross(d2);
+            },
+            .linear => 0,
         };
     }
 };

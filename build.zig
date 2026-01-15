@@ -211,4 +211,20 @@ pub fn build(b: *std.Build) void {
     const run_contour_debug = b.addRunArtifact(contour_debug_tests);
     const contour_step = b.step("debug-contours", "Run contour structure debug test");
     contour_step.dependOn(&run_contour_debug.step);
+
+    // Debug S curvature test
+    const s_curvature_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_s_curvature.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+
+    const run_s_curvature = b.addRunArtifact(s_curvature_tests);
+    const s_curvature_step = b.step("debug-s-curvature", "Debug S character curvature values");
+    s_curvature_step.dependOn(&run_s_curvature.step);
 }

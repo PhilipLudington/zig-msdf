@@ -95,6 +95,60 @@ pub const Contour = struct {
     pub fn edgeCount(self: Contour) usize {
         return self.edges.len;
     }
+
+    /// Split all cubic bezier edges at their inflection points.
+    /// This creates separate edge segments that can be colored independently,
+    /// which is critical for proper MSDF rendering of S-curves.
+    pub fn splitAtInflections(self: *Contour) !void {
+        // First pass: count how many edges we'll have after splitting
+        var new_edge_count: usize = 0;
+        for (self.edges) |e| {
+            switch (e) {
+                .cubic => |cubic| {
+                    const split_result = cubic.splitAtInflections();
+                    new_edge_count += split_result.count;
+                },
+                .linear, .quadratic => {
+                    new_edge_count += 1;
+                },
+            }
+        }
+
+        // If no splitting needed, return early
+        if (new_edge_count == self.edges.len) {
+            return;
+        }
+
+        // Allocate new edges array
+        const new_edges = try self.allocator.alloc(EdgeSegment, new_edge_count);
+        errdefer self.allocator.free(new_edges);
+
+        // Second pass: populate the new edges array
+        var new_idx: usize = 0;
+        for (self.edges) |e| {
+            switch (e) {
+                .cubic => |cubic| {
+                    const split_result = cubic.splitAtInflections();
+                    for (0..split_result.count) |i| {
+                        new_edges[new_idx] = .{ .cubic = split_result.segments[i] };
+                        new_idx += 1;
+                    }
+                },
+                .linear => {
+                    new_edges[new_idx] = e;
+                    new_idx += 1;
+                },
+                .quadratic => {
+                    new_edges[new_idx] = e;
+                    new_idx += 1;
+                },
+            }
+        }
+
+        // Free old edges and replace with new
+        self.allocator.free(self.edges);
+        self.edges = new_edges;
+    }
 };
 
 /// A shape is a collection of contours forming a complete glyph outline.
@@ -184,6 +238,14 @@ pub const Shape = struct {
         //
         // No normalization is needed as long as the font follows TrueType conventions.
         _ = self;
+    }
+
+    /// Split all cubic bezier edges at their inflection points across all contours.
+    /// This is critical for proper MSDF edge coloring of S-curves and similar shapes.
+    pub fn splitAtInflections(self: *Shape) !void {
+        for (self.contours) |*contour| {
+            try contour.splitAtInflections();
+        }
     }
 };
 
