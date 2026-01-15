@@ -247,7 +247,7 @@ pub fn generateGlyph(
     );
 
     // Generate MSDF
-    const bitmap = generate.generateMsdf(
+    var bitmap = generate.generateMsdf(
         allocator,
         shape,
         size,
@@ -255,6 +255,9 @@ pub fn generateGlyph(
         range_in_font_units,
         transform,
     ) catch return MsdfError.OutOfMemory;
+
+    // Apply error correction to fix artifacts where channels disagree
+    generate.correctErrors(&bitmap);
 
     // Calculate metrics (normalized to font units, caller can scale as needed)
     const metrics = GlyphMetrics{

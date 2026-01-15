@@ -274,6 +274,64 @@ fn computeChannelDistances(shape: Shape, point: Vec2) [3]f64 {
     };
 }
 
+/// Apply error correction to an MSDF bitmap.
+///
+/// MSDF artifacts occur when RGB channels disagree about whether a pixel is
+/// inside or outside the shape. This post-processing step detects such
+/// disagreements and clamps minority channels to align with the majority,
+/// ensuring the median correctly represents the edge.
+///
+/// Algorithm:
+/// - For each pixel, count channels saying "inside" (value > 127)
+/// - If channels disagree (1 or 2 vote inside):
+///   - Majority inside (2+ votes): clamp minority channel to >= 128
+///   - Majority outside (1 vote): clamp minority channel to <= 127
+///
+/// This is based on the error correction technique from the msdfgen reference
+/// implementation by Viktor Chlumsky.
+pub fn correctErrors(bitmap: *MsdfBitmap) void {
+    const threshold: u8 = 127;
+
+    var y: u32 = 0;
+    while (y < bitmap.height) : (y += 1) {
+        var x: u32 = 0;
+        while (x < bitmap.width) : (x += 1) {
+            var rgb = bitmap.getPixel(x, y);
+            const r = rgb[0];
+            const g = rgb[1];
+            const b = rgb[2];
+
+            // Count channels that say "inside" (> threshold means inside)
+            const r_inside: u8 = if (r > threshold) 1 else 0;
+            const g_inside: u8 = if (g > threshold) 1 else 0;
+            const b_inside: u8 = if (b > threshold) 1 else 0;
+            const inside_count = r_inside + g_inside + b_inside;
+
+            // All agree (0 or 3) - no correction needed
+            if (inside_count == 0 or inside_count == 3) {
+                continue;
+            }
+
+            // Channels disagree - apply correction
+            if (inside_count >= 2) {
+                // Majority says inside - clamp minority channel up to edge
+                // This ensures median will be >= 128 (inside)
+                if (r <= threshold) rgb[0] = threshold + 1;
+                if (g <= threshold) rgb[1] = threshold + 1;
+                if (b <= threshold) rgb[2] = threshold + 1;
+            } else {
+                // Majority says outside - clamp minority channel down to edge
+                // This ensures median will be <= 127 (outside)
+                if (r > threshold) rgb[0] = threshold;
+                if (g > threshold) rgb[1] = threshold;
+                if (b > threshold) rgb[2] = threshold;
+            }
+
+            bitmap.setPixel(x, y, rgb);
+        }
+    }
+}
+
 /// Calculate the transform needed to fit a shape into a bitmap with padding.
 ///
 /// Parameters:
@@ -459,4 +517,141 @@ test "generateMsdf - simple square" {
     try std.testing.expect(corner[0] < 128);
     try std.testing.expect(corner[1] < 128);
     try std.testing.expect(corner[2] < 128);
+}
+
+test "correctErrors - no change when channels agree" {
+    const allocator = std.testing.allocator;
+
+    // Create a small test bitmap
+    const pixels = try allocator.alloc(u8, 3 * 3); // 3 pixels
+    defer allocator.free(pixels);
+
+    // Pixel 0: all inside (all > 127)
+    pixels[0] = 200;
+    pixels[1] = 180;
+    pixels[2] = 190;
+
+    // Pixel 1: all outside (all <= 127)
+    pixels[3] = 50;
+    pixels[4] = 60;
+    pixels[5] = 70;
+
+    // Pixel 2: all at edge (== 128, which is > 127 so "inside")
+    pixels[6] = 128;
+    pixels[7] = 128;
+    pixels[8] = 128;
+
+    var bitmap = MsdfBitmap{
+        .pixels = pixels,
+        .width = 3,
+        .height = 1,
+        .allocator = allocator,
+    };
+
+    correctErrors(&bitmap);
+
+    // All should be unchanged since channels agree
+    try std.testing.expectEqual(@as(u8, 200), bitmap.pixels[0]);
+    try std.testing.expectEqual(@as(u8, 180), bitmap.pixels[1]);
+    try std.testing.expectEqual(@as(u8, 190), bitmap.pixels[2]);
+
+    try std.testing.expectEqual(@as(u8, 50), bitmap.pixels[3]);
+    try std.testing.expectEqual(@as(u8, 60), bitmap.pixels[4]);
+    try std.testing.expectEqual(@as(u8, 70), bitmap.pixels[5]);
+
+    try std.testing.expectEqual(@as(u8, 128), bitmap.pixels[6]);
+    try std.testing.expectEqual(@as(u8, 128), bitmap.pixels[7]);
+    try std.testing.expectEqual(@as(u8, 128), bitmap.pixels[8]);
+}
+
+test "correctErrors - fixes majority inside disagreement" {
+    const allocator = std.testing.allocator;
+
+    const pixels = try allocator.alloc(u8, 3); // 1 pixel
+    defer allocator.free(pixels);
+
+    // Two channels say inside, one says outside
+    // R=200 (inside), G=180 (inside), B=50 (outside)
+    pixels[0] = 200;
+    pixels[1] = 180;
+    pixels[2] = 50;
+
+    var bitmap = MsdfBitmap{
+        .pixels = pixels,
+        .width = 1,
+        .height = 1,
+        .allocator = allocator,
+    };
+
+    correctErrors(&bitmap);
+
+    // R and G should be unchanged, B should be clamped up to 128
+    try std.testing.expectEqual(@as(u8, 200), bitmap.pixels[0]);
+    try std.testing.expectEqual(@as(u8, 180), bitmap.pixels[1]);
+    try std.testing.expectEqual(@as(u8, 128), bitmap.pixels[2]);
+}
+
+test "correctErrors - fixes majority outside disagreement" {
+    const allocator = std.testing.allocator;
+
+    const pixels = try allocator.alloc(u8, 3); // 1 pixel
+    defer allocator.free(pixels);
+
+    // Two channels say outside, one says inside
+    // R=50 (outside), G=60 (outside), B=200 (inside)
+    pixels[0] = 50;
+    pixels[1] = 60;
+    pixels[2] = 200;
+
+    var bitmap = MsdfBitmap{
+        .pixels = pixels,
+        .width = 1,
+        .height = 1,
+        .allocator = allocator,
+    };
+
+    correctErrors(&bitmap);
+
+    // R and G should be unchanged, B should be clamped down to 127
+    try std.testing.expectEqual(@as(u8, 50), bitmap.pixels[0]);
+    try std.testing.expectEqual(@as(u8, 60), bitmap.pixels[1]);
+    try std.testing.expectEqual(@as(u8, 127), bitmap.pixels[2]);
+}
+
+test "correctErrors - handles edge threshold correctly" {
+    const allocator = std.testing.allocator;
+
+    const pixels = try allocator.alloc(u8, 6); // 2 pixels
+    defer allocator.free(pixels);
+
+    // Pixel 0: R=127 (outside, at threshold), G=128 (inside), B=129 (inside)
+    // Majority inside, R should be clamped to 128
+    pixels[0] = 127;
+    pixels[1] = 128;
+    pixels[2] = 129;
+
+    // Pixel 1: R=128 (inside), G=127 (outside), B=126 (outside)
+    // Majority outside, R should be clamped to 127
+    pixels[3] = 128;
+    pixels[4] = 127;
+    pixels[5] = 126;
+
+    var bitmap = MsdfBitmap{
+        .pixels = pixels,
+        .width = 2,
+        .height = 1,
+        .allocator = allocator,
+    };
+
+    correctErrors(&bitmap);
+
+    // Pixel 0: R clamped up to 128
+    try std.testing.expectEqual(@as(u8, 128), bitmap.pixels[0]);
+    try std.testing.expectEqual(@as(u8, 128), bitmap.pixels[1]);
+    try std.testing.expectEqual(@as(u8, 129), bitmap.pixels[2]);
+
+    // Pixel 1: R clamped down to 127
+    try std.testing.expectEqual(@as(u8, 127), bitmap.pixels[3]);
+    try std.testing.expectEqual(@as(u8, 127), bitmap.pixels[4]);
+    try std.testing.expectEqual(@as(u8, 126), bitmap.pixels[5]);
 }
