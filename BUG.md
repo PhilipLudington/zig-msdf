@@ -1,7 +1,7 @@
 # MSDF Artifacts on Curved Glyphs
 
 **Issue:** GitHub Issue #1
-**Status:** Corner rounding FIXED, curve artifacts significantly improved (84-93% artifact-free)
+**Status:** Corner rounding FIXED, curve artifacts STILL VISIBLE despite metric improvements
 
 ## Problem Description
 
@@ -236,7 +236,16 @@ The rounded corner issue is subtle because:
 
 ## Curve Artifacts Investigation (January 2026)
 
-**Status:** Color diversity restored - artifact rates significantly improved
+**Status:** Metrics improved but visual artifacts remain severe
+
+### Visual Evidence (8x zoom)
+
+Despite test metrics showing 84-93% "artifact-free" rates, visual inspection at 8x zoom reveals:
+- **'S'**: Multiple "bite" artifacts along both curves
+- **'D'**: Jagged edges on the curved portion
+- **'M'**: Corners now sharp (corner protection working)
+
+**The "artifact-free" metric does not capture perceptual quality.** A few severe artifacts are more noticeable than many minor ones.
 
 ### Root Cause Found
 
@@ -274,7 +283,7 @@ Reverting `coloring.zig` to the committed version restored:
 - Color switching every 3 curved edges
 - Alternating colors for smooth contours
 
-### Results After Fix
+### Test Metrics After Fix
 
 | Character | Before | After | Improvement |
 |-----------|--------|-------|-------------|
@@ -283,7 +292,8 @@ Reverting `coloring.zig` to the committed version restored:
 | 2 | 87.3% | **93.0%** | +5.7% |
 | 3 | 87.1% | **91.1%** | +4.0% |
 
-**Artifact gap now negative (-2.3%)** - S-curves have BETTER artifact rates than angular characters!
+**⚠️ WARNING: These metrics are misleading.** Visual inspection shows severe artifacts remain.
+The metric counts pixels, but a single severe artifact is more visible than many minor ones.
 
 ### Diagnostic Tool Created
 
@@ -295,16 +305,34 @@ Added `tests/artifact_diagnostic.zig` with:
 
 Run with: `zig build artifact-diag`
 
-### Remaining Work
+### Critical Remaining Work
 
-1. **Some artifacts remain** (~7-16% of boundary pixels)
-   - These are on outer image edges where opposite sides of curves interfere
-   - May be false positives from detection algorithm
-   - Consider msdfgen's pseudo-distance approach for further improvement
+**The library is NOT production-ready.** Visual artifacts on S and D are unacceptable.
 
-2. **Edge.zig interior tangent fix** - Still present in local changes
-   - Uses t=0.01/0.99 for sign determination at endpoints
-   - May help prevent edge cases, worth keeping
+#### Priority 1: Understand Why msdfgen Works
+
+msdfgen produces clean output with the same font. We need to understand:
+1. **Pseudo-distance calculation** - msdfgen uses a different distance approach
+2. **Edge coloring differences** - Compare color assignments pixel-by-pixel
+3. **Error correction algorithm** - Study `msdf-error-correction.cpp` in detail
+
+#### Priority 2: Per-Pixel Comparison Tool
+
+Build a tool to compare zig-msdf and msdfgen output:
+- Overlay mode showing differences
+- Per-pixel distance value comparison
+- Identify exactly WHERE they diverge
+
+#### Priority 3: Consider Alternative Approaches
+
+If matching msdfgen is too difficult:
+1. **SDF instead of MSDF** - Simpler, no color artifacts (but rounded corners)
+2. **Higher resolution** - Reduce artifacts by increasing atlas size
+3. **Different font rendering** - Use system font rasterizer + distance transform
+
+#### Interior Tangent Fix
+
+The `edge.zig` interior tangent fix (t=0.01/0.99 for sign determination) is implemented and may help edge cases.
 
 ### Relevant Code Locations
 
