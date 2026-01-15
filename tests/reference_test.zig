@@ -218,29 +218,34 @@ test "structural comparison - shape boundaries match" {
     }
 }
 
-test "multiple characters consistency" {
+test "all printable ASCII characters" {
     const allocator = std.testing.allocator;
 
     var font = try msdf.Font.fromFile(allocator, "/System/Library/Fonts/Geneva.ttf");
     defer font.deinit();
 
-    // Test characters: A, B, O, 0, @
-    const test_chars = [_]struct { code: u21, ref_file: []const u8 }{
-        .{ .code = 'A', .ref_file = "tests/fixtures/reference/geneva_65.rgba" },
-        .{ .code = 'B', .ref_file = "tests/fixtures/reference/geneva_66.rgba" },
-        .{ .code = 'O', .ref_file = "tests/fixtures/reference/geneva_79.rgba" },
-        .{ .code = '0', .ref_file = "tests/fixtures/reference/geneva_48.rgba" },
-        .{ .code = '@', .ref_file = "tests/fixtures/reference/geneva_64.rgba" },
-    };
+    var passed: usize = 0;
+    var failed: usize = 0;
+    var skipped: usize = 0;
+    var failed_chars: [95]u8 = undefined;
+    var failed_agreements: [95]f64 = undefined;
 
-    for (test_chars) |tc| {
-        const ref = loadReferenceRgba(allocator, tc.ref_file) catch |err| {
-            if (err == error.FileNotFound) continue;
+    // Test all printable ASCII characters (32-126)
+    for (32..127) |code| {
+        // Build reference file path
+        var path_buf: [64]u8 = undefined;
+        const ref_path = std.fmt.bufPrint(&path_buf, "tests/fixtures/reference/geneva_{d}.rgba", .{code}) catch continue;
+
+        const ref = loadReferenceRgba(allocator, ref_path) catch |err| {
+            if (err == error.FileNotFound) {
+                skipped += 1;
+                continue;
+            }
             return err;
         };
         defer allocator.free(ref.pixels);
 
-        var result = try msdf.generateGlyph(allocator, font, tc.code, .{
+        var result = try msdf.generateGlyph(allocator, font, @intCast(code), .{
             .size = 32,
             .padding = 2,
             .range = 4.0,
@@ -249,12 +254,313 @@ test "multiple characters consistency" {
 
         const io_agreement = computeInsideOutsideAgreement(ref.pixels, result.pixels);
 
-        std.debug.print("Character '{c}': inside/outside agreement = {d:.1}%\n", .{
-            @as(u8, @intCast(tc.code)),
-            io_agreement * 100,
-        });
-
         // Each character should have high structural agreement
-        try std.testing.expect(io_agreement > 0.80);
+        if (io_agreement > 0.80) {
+            passed += 1;
+        } else {
+            failed_chars[failed] = @intCast(code);
+            failed_agreements[failed] = io_agreement;
+            failed += 1;
+        }
     }
+
+    // Print summary
+    std.debug.print("\nASCII test: {d} passed, {d} failed, {d} skipped\n", .{ passed, failed, skipped });
+
+    // Print failures if any
+    if (failed > 0) {
+        std.debug.print("Failed characters:\n", .{});
+        for (0..failed) |i| {
+            const c = failed_chars[i];
+            if (c >= 33 and c <= 126) {
+                std.debug.print("  '{c}' ({d}): {d:.1}%\n", .{ c, c, failed_agreements[i] * 100 });
+            } else {
+                std.debug.print("  ({d}): {d:.1}%\n", .{ c, failed_agreements[i] * 100 });
+            }
+        }
+    }
+
+    // All tested characters should pass
+    try std.testing.expect(failed == 0);
+}
+
+// ============================================================================
+// S-Curve Edge Quality Tests
+// ============================================================================
+
+/// Compute edge smoothness by measuring gradient consistency along boundaries.
+/// Returns a score from 0-1 where 1 is perfectly smooth gradients.
+/// Artifacts from bad edge coloring show up as sudden jumps in gradient direction.
+fn computeEdgeSmoothness(pixels: []const u8, width: u32, height: u32) f64 {
+    var smooth_transitions: usize = 0;
+    var total_boundary_pixels: usize = 0;
+
+    // Scan interior pixels (skip edges)
+    var y: u32 = 1;
+    while (y < height - 1) : (y += 1) {
+        var x: u32 = 1;
+        while (x < width - 1) : (x += 1) {
+            const idx = (y * width + x) * 3;
+
+            // Get median value for this pixel
+            const m = median3(pixels[idx], pixels[idx + 1], pixels[idx + 2]);
+
+            // Check if this is a boundary pixel (near 127)
+            if (m > 100 and m < 155) {
+                total_boundary_pixels += 1;
+
+                // Get neighboring medians
+                const idx_left = (y * width + x - 1) * 3;
+                const idx_right = (y * width + x + 1) * 3;
+                const idx_up = ((y - 1) * width + x) * 3;
+                const idx_down = ((y + 1) * width + x) * 3;
+
+                const m_left = median3(pixels[idx_left], pixels[idx_left + 1], pixels[idx_left + 2]);
+                const m_right = median3(pixels[idx_right], pixels[idx_right + 1], pixels[idx_right + 2]);
+                const m_up = median3(pixels[idx_up], pixels[idx_up + 1], pixels[idx_up + 2]);
+                const m_down = median3(pixels[idx_down], pixels[idx_down + 1], pixels[idx_down + 2]);
+
+                // Compute gradient magnitude
+                const grad_x = @as(i32, m_right) - @as(i32, m_left);
+                const grad_y = @as(i32, m_down) - @as(i32, m_up);
+
+                // Check for consistency: gradient should be smooth, not have sudden jumps
+                // A smooth edge has consistent gradient direction
+                const grad_mag = @abs(grad_x) + @abs(grad_y);
+
+                // Artifacts show as very high gradients (sudden value jumps)
+                // Normal boundary pixels have moderate gradients
+                if (grad_mag < 100) {
+                    smooth_transitions += 1;
+                }
+            }
+        }
+    }
+
+    if (total_boundary_pixels == 0) return 1.0;
+    return @as(f64, @floatFromInt(smooth_transitions)) / @as(f64, @floatFromInt(total_boundary_pixels));
+}
+
+/// Detect artifact pixels - places where channel values create bad median behavior.
+/// MSDF artifacts show as pixels where channels disagree about inside/outside.
+/// Returns the percentage of boundary pixels that are artifact-free.
+fn computeArtifactFreeRate(pixels: []const u8, width: u32, height: u32) f64 {
+    var artifact_free: usize = 0;
+    var total_boundary_pixels: usize = 0;
+
+    var y: u32 = 1;
+    while (y < height - 1) : (y += 1) {
+        var x: u32 = 1;
+        while (x < width - 1) : (x += 1) {
+            const idx = (y * width + x) * 3;
+            const r = pixels[idx];
+            const g = pixels[idx + 1];
+            const b = pixels[idx + 2];
+            const m = median3(r, g, b);
+
+            // Check boundary pixels (where artifacts are visible)
+            if (m > 90 and m < 165) {
+                total_boundary_pixels += 1;
+
+                // Artifact detection: channels should not wildly disagree about inside/outside
+                // An artifact occurs when one channel says "inside" (>127) while another
+                // says "outside" (<127) AND the difference is extreme
+                const r_inside = r > 127;
+                const g_inside = g > 127;
+                const b_inside = b > 127;
+
+                // Count how many channels say "inside"
+                var inside_count: u8 = 0;
+                if (r_inside) inside_count += 1;
+                if (g_inside) inside_count += 1;
+                if (b_inside) inside_count += 1;
+
+                // If all agree (0 or 3) or most agree (1 or 2), it's fine
+                // Artifacts occur when channels strongly disagree with extreme values
+                const max_channel = @max(r, @max(g, b));
+                const min_channel = @min(r, @min(g, b));
+                const spread = max_channel - min_channel;
+
+                // An artifact is: channels disagree AND spread is extreme
+                const is_artifact = (inside_count == 1 or inside_count == 2) and spread > 150;
+
+                if (!is_artifact) {
+                    artifact_free += 1;
+                }
+            }
+        }
+    }
+
+    if (total_boundary_pixels == 0) return 1.0;
+    return @as(f64, @floatFromInt(artifact_free)) / @as(f64, @floatFromInt(total_boundary_pixels));
+}
+
+test "S-curve characters edge quality - S" {
+    const allocator = std.testing.allocator;
+
+    var font = msdf.Font.fromFile(allocator, "/System/Library/Fonts/Geneva.ttf") catch |err| {
+        std.debug.print("Skipping test, font not found: {}\n", .{err});
+        return;
+    };
+    defer font.deinit();
+
+    // Generate at higher resolution to better detect artifacts
+    var result = try msdf.generateGlyph(allocator, font, 'S', .{
+        .size = 64,
+        .padding = 4,
+        .range = 4.0,
+    });
+    defer result.deinit(allocator);
+
+    const smoothness = computeEdgeSmoothness(result.pixels, result.width, result.height);
+    const artifact_free = computeArtifactFreeRate(result.pixels, result.width, result.height);
+
+    std.debug.print("\nS-curve test 'S':\n", .{});
+    std.debug.print("  Edge smoothness: {d:.1}%\n", .{smoothness * 100});
+    std.debug.print("  Artifact-free rate: {d:.1}%\n", .{artifact_free * 100});
+
+    // S has inflection points - these thresholds detect coloring artifacts
+    try std.testing.expect(smoothness > 0.70);
+    try std.testing.expect(artifact_free > 0.80);
+}
+
+test "S-curve characters edge quality - D" {
+    const allocator = std.testing.allocator;
+
+    var font = msdf.Font.fromFile(allocator, "/System/Library/Fonts/Geneva.ttf") catch |err| {
+        std.debug.print("Skipping test, font not found: {}\n", .{err});
+        return;
+    };
+    defer font.deinit();
+
+    var result = try msdf.generateGlyph(allocator, font, 'D', .{
+        .size = 64,
+        .padding = 4,
+        .range = 4.0,
+    });
+    defer result.deinit(allocator);
+
+    const smoothness = computeEdgeSmoothness(result.pixels, result.width, result.height);
+    const artifact_free = computeArtifactFreeRate(result.pixels, result.width, result.height);
+
+    std.debug.print("\nS-curve test 'D':\n", .{});
+    std.debug.print("  Edge smoothness: {d:.1}%\n", .{smoothness * 100});
+    std.debug.print("  Artifact-free rate: {d:.1}%\n", .{artifact_free * 100});
+
+    try std.testing.expect(smoothness > 0.70);
+    try std.testing.expect(artifact_free > 0.80);
+}
+
+test "S-curve characters edge quality - 2" {
+    const allocator = std.testing.allocator;
+
+    var font = msdf.Font.fromFile(allocator, "/System/Library/Fonts/Geneva.ttf") catch |err| {
+        std.debug.print("Skipping test, font not found: {}\n", .{err});
+        return;
+    };
+    defer font.deinit();
+
+    var result = try msdf.generateGlyph(allocator, font, '2', .{
+        .size = 64,
+        .padding = 4,
+        .range = 4.0,
+    });
+    defer result.deinit(allocator);
+
+    const smoothness = computeEdgeSmoothness(result.pixels, result.width, result.height);
+    const artifact_free = computeArtifactFreeRate(result.pixels, result.width, result.height);
+
+    std.debug.print("\nS-curve test '2':\n", .{});
+    std.debug.print("  Edge smoothness: {d:.1}%\n", .{smoothness * 100});
+    std.debug.print("  Artifact-free rate: {d:.1}%\n", .{artifact_free * 100});
+
+    try std.testing.expect(smoothness > 0.70);
+    try std.testing.expect(artifact_free > 0.80);
+}
+
+test "S-curve characters edge quality - 3" {
+    const allocator = std.testing.allocator;
+
+    var font = msdf.Font.fromFile(allocator, "/System/Library/Fonts/Geneva.ttf") catch |err| {
+        std.debug.print("Skipping test, font not found: {}\n", .{err});
+        return;
+    };
+    defer font.deinit();
+
+    var result = try msdf.generateGlyph(allocator, font, '3', .{
+        .size = 64,
+        .padding = 4,
+        .range = 4.0,
+    });
+    defer result.deinit(allocator);
+
+    const smoothness = computeEdgeSmoothness(result.pixels, result.width, result.height);
+    const artifact_free = computeArtifactFreeRate(result.pixels, result.width, result.height);
+
+    std.debug.print("\nS-curve test '3':\n", .{});
+    std.debug.print("  Edge smoothness: {d:.1}%\n", .{smoothness * 100});
+    std.debug.print("  Artifact-free rate: {d:.1}%\n", .{artifact_free * 100});
+
+    try std.testing.expect(smoothness > 0.70);
+    try std.testing.expect(artifact_free > 0.80);
+}
+
+test "compare S-curve vs angular character quality" {
+    const allocator = std.testing.allocator;
+
+    var font = msdf.Font.fromFile(allocator, "/System/Library/Fonts/Geneva.ttf") catch |err| {
+        std.debug.print("Skipping test, font not found: {}\n", .{err});
+        return;
+    };
+    defer font.deinit();
+
+    std.debug.print("\nComparing edge quality (angular vs S-curve):\n", .{});
+
+    // Test angular character (should be high quality)
+    var result_a = try msdf.generateGlyph(allocator, font, 'A', .{
+        .size = 64,
+        .padding = 4,
+        .range = 4.0,
+    });
+    defer result_a.deinit(allocator);
+
+    const smoothness_a = computeEdgeSmoothness(result_a.pixels, result_a.width, result_a.height);
+    const artifact_free_a = computeArtifactFreeRate(result_a.pixels, result_a.width, result_a.height);
+    std.debug.print("  'A' (angular):  smoothness = {d:.1}%, artifact-free = {d:.1}%\n", .{ smoothness_a * 100, artifact_free_a * 100 });
+
+    // Test S-curve character
+    var result_s = try msdf.generateGlyph(allocator, font, 'S', .{
+        .size = 64,
+        .padding = 4,
+        .range = 4.0,
+    });
+    defer result_s.deinit(allocator);
+
+    const smoothness_s = computeEdgeSmoothness(result_s.pixels, result_s.width, result_s.height);
+    const artifact_free_s = computeArtifactFreeRate(result_s.pixels, result_s.width, result_s.height);
+    std.debug.print("  'S' (S-curve):  smoothness = {d:.1}%, artifact-free = {d:.1}%\n", .{ smoothness_s * 100, artifact_free_s * 100 });
+
+    // Test digit with curves
+    var result_3 = try msdf.generateGlyph(allocator, font, '3', .{
+        .size = 64,
+        .padding = 4,
+        .range = 4.0,
+    });
+    defer result_3.deinit(allocator);
+
+    const smoothness_3 = computeEdgeSmoothness(result_3.pixels, result_3.width, result_3.height);
+    const artifact_free_3 = computeArtifactFreeRate(result_3.pixels, result_3.width, result_3.height);
+    std.debug.print("  '3' (S-curve):  smoothness = {d:.1}%, artifact-free = {d:.1}%\n", .{ smoothness_3 * 100, artifact_free_3 * 100 });
+
+    // If edge coloring is working well, S-curve chars should have similar quality to angular
+    // A large gap indicates the coloring algorithm isn't handling inflection points
+    const smoothness_gap = smoothness_a - @min(smoothness_s, smoothness_3);
+    const artifact_gap = artifact_free_a - @min(artifact_free_s, artifact_free_3);
+    std.debug.print("  Smoothness gap (A vs worst S-curve): {d:.1}%\n", .{smoothness_gap * 100});
+    std.debug.print("  Artifact gap (A vs worst S-curve): {d:.1}%\n", .{artifact_gap * 100});
+
+    // Allow some gap but not too much - if inflection handling is broken, gap will be large
+    try std.testing.expect(smoothness_gap < 0.25);
+    // Artifact gap threshold - a significant gap indicates edge coloring issues
+    try std.testing.expect(artifact_gap < 0.15);
 }
