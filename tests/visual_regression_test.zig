@@ -19,6 +19,11 @@ const QuadraticSegment = msdf.edge.QuadraticSegment;
 const Contour = msdf.contour.Contour;
 const Shape = msdf.contour.Shape;
 
+/// Compute median of three u8 values (used for MSDF distance reconstruction)
+fn median3(a: u8, b: u8, c: u8) u8 {
+    return @max(@min(a, b), @min(@max(a, b), c));
+}
+
 // ============================================================================
 // Determinism Tests
 // ============================================================================
@@ -113,6 +118,7 @@ test "distance field produces continuous output" {
     defer bitmap.deinit();
 
     // Verify the output has both high and low values (indicating proper inside/outside)
+    // Use median of RGB channels (correct MSDF interpretation)
     var min_val: u8 = 255;
     var max_val: u8 = 0;
 
@@ -121,8 +127,10 @@ test "distance field produces continuous output" {
         var x: u32 = 0;
         while (x < 64) : (x += 1) {
             const pixel = bitmap.getPixel(x, y);
-            min_val = @min(min_val, pixel[0]);
-            max_val = @max(max_val, pixel[0]);
+            // MSDF uses median of RGB for distance
+            const med = median3(pixel[0], pixel[1], pixel[2]);
+            min_val = @min(min_val, med);
+            max_val = @max(max_val, med);
         }
     }
 

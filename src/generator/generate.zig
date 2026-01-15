@@ -274,28 +274,75 @@ fn computeChannelDistances(shape: Shape, point: Vec2) [3]f64 {
     };
 }
 
-/// Apply error correction to an MSDF bitmap.
+/// Stencil flags for error correction.
+/// Used to mark pixels that should be protected from correction.
+pub const StencilFlags = struct {
+    pub const NONE: u8 = 0;
+    pub const PROTECTED: u8 = 1; // Pixel near corner, don't modify
+    pub const ERROR: u8 = 2; // Pixel detected as artifact, needs correction
+};
+
+/// Apply error correction to an MSDF bitmap with corner protection.
 ///
 /// MSDF artifacts occur when RGB channels disagree about whether a pixel is
 /// inside or outside the shape. This causes visual artifacts when the MSDF
 /// is rendered because interpolation between disagreeing pixels produces
 /// incorrect median values.
 ///
-/// This implements a two-phase correction (based on msdfgen by Viktor Chlumsky):
+/// This implements msdfgen-style selective error correction:
 ///
-/// Phase 1: Per-pixel channel agreement
-/// - Detect pixels where channels disagree about inside/outside
-/// - Force minority channels to agree with majority by clamping
+/// 1. Corner Protection: Identify pixels near color-change corners in the shape
+///    and mark them as PROTECTED. These pixels have intentional channel
+///    disagreement that creates sharp corners.
 ///
-/// Phase 2: Neighbor-based clash detection
-/// - Compare each pixel with its neighbors
-/// - Apply median filtering to pixels with large inter-channel differences
+/// 2. Edge Protection: Mark pixels near shape edges as PROTECTED to preserve
+///    edge sharpness.
 ///
-/// This eliminates the jagged artifacts visible on curved glyphs like S, D, etc.
+/// 3. Clash Detection: Find pixels where channels disagree AND the pixel is
+///    NOT protected. Only these are marked as ERROR.
+///
+/// 4. Correction: Apply median filtering only to ERROR pixels.
+///
+/// This preserves sharp corners while eliminating artifacts on curves.
 pub fn correctErrors(bitmap: *MsdfBitmap) void {
+    correctErrorsWithProtection(bitmap, null, null);
+}
+
+/// Apply error correction with shape information for corner protection.
+/// If shape and transform are provided, corners will be protected.
+pub fn correctErrorsWithProtection(bitmap: *MsdfBitmap, shape: ?Shape, transform: ?Transform) void {
+    const pixel_count = @as(usize, bitmap.width) * @as(usize, bitmap.height);
+
+    // Allocate stencil buffer
+    const stencil = bitmap.allocator.alloc(u8, pixel_count) catch {
+        // Fall back to simple correction without protection
+        correctErrorsSimple(bitmap);
+        return;
+    };
+    defer bitmap.allocator.free(stencil);
+    @memset(stencil, StencilFlags.NONE);
+
+    // Phase 1: Protect corners (if shape info available)
+    if (shape) |s| {
+        if (transform) |t| {
+            protectCorners(stencil, bitmap.width, bitmap.height, s, t);
+        }
+    }
+
+    // Phase 2: Protect edge-adjacent pixels
+    protectEdges(stencil, bitmap, 0.5);
+
+    // Phase 3: Detect clashes (only on non-protected pixels)
+    detectClashes(stencil, bitmap);
+
+    // Phase 4: Apply correction only to ERROR pixels
+    applyCorrection(stencil, bitmap);
+}
+
+/// Simple error correction without corner protection (legacy behavior).
+fn correctErrorsSimple(bitmap: *MsdfBitmap) void {
     const threshold: u8 = 127;
 
-    // Phase 1: Force per-pixel channel agreement
     var y: u32 = 0;
     while (y < bitmap.height) : (y += 1) {
         var x: u32 = 0;
@@ -317,34 +364,143 @@ pub fn correctErrors(bitmap: *MsdfBitmap) void {
             }
 
             // Channels disagree - apply median filtering
-            // This is more aggressive than clamping and produces smoother results
             const med = median3(r, g, b);
             bitmap.setPixel(x, y, .{ med, med, med });
         }
     }
+}
 
-    // Phase 2: Smooth edges by detecting high-spread boundary pixels
-    // and applying additional median filtering
-    if (bitmap.width < 3 or bitmap.height < 3) return;
+/// Mark pixels near color-change corners as protected.
+/// These pixels have intentional channel disagreement for sharp corners.
+fn protectCorners(stencil: []u8, width: u32, height: u32, shape: Shape, transform: Transform) void {
+    for (shape.contours) |contour| {
+        const edge_count = contour.edges.len;
+        if (edge_count < 2) continue;
 
-    const pixel_count = @as(usize, bitmap.width) * @as(usize, bitmap.height);
-    var smooth_flags = bitmap.allocator.alloc(bool, pixel_count) catch return;
-    defer bitmap.allocator.free(smooth_flags);
-    @memset(smooth_flags, false);
+        for (0..edge_count) |i| {
+            const prev_idx = if (i == 0) edge_count - 1 else i - 1;
+            const prev_edge = contour.edges[prev_idx];
+            const curr_edge = contour.edges[i];
 
-    // Detect boundary pixels with high channel spread
-    y = 1;
-    while (y < bitmap.height - 1) : (y += 1) {
-        var x: u32 = 1;
-        while (x < bitmap.width - 1) : (x += 1) {
+            // Check if colors differ at this junction (corner point)
+            const prev_color = prev_edge.getColor();
+            const curr_color = curr_edge.getColor();
+
+            // Color change indicates a corner that needs protection
+            if (prev_color != curr_color) {
+                // Get the corner point (end of prev edge = start of curr edge)
+                const corner_point = prev_edge.endPoint();
+
+                // Transform to pixel coordinates
+                const pixel_pos = transform.shapeToPixel(corner_point);
+
+                // Mark the 4 surrounding texels as protected
+                const px = pixel_pos.x;
+                const py = pixel_pos.y;
+
+                // Get the 4 texels that could be affected by this corner
+                const x0 = @as(i32, @intFromFloat(@floor(px)));
+                const y0 = @as(i32, @intFromFloat(@floor(py)));
+
+                // Mark a 3x3 region around the corner for extra protection
+                var dy: i32 = -1;
+                while (dy <= 1) : (dy += 1) {
+                    var dx: i32 = -1;
+                    while (dx <= 1) : (dx += 1) {
+                        const tx = x0 + dx;
+                        const ty = y0 + dy;
+
+                        if (tx >= 0 and tx < @as(i32, @intCast(width)) and
+                            ty >= 0 and ty < @as(i32, @intCast(height)))
+                        {
+                            const idx = @as(usize, @intCast(ty)) * width + @as(usize, @intCast(tx));
+                            stencil[idx] |= StencilFlags.PROTECTED;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Protect pixels near the shape edge where channels agree.
+/// Only protects edge pixels that don't have channel disagreement about inside/outside.
+fn protectEdges(stencil: []u8, bitmap: *MsdfBitmap, protection_radius: f64) void {
+    _ = protection_radius;
+
+    const threshold: u8 = 127;
+
+    var y: u32 = 0;
+    while (y < bitmap.height) : (y += 1) {
+        var x: u32 = 0;
+        while (x < bitmap.width) : (x += 1) {
+            const idx = @as(usize, y) * bitmap.width + x;
+
+            // Skip already protected pixels (corners)
+            if (stencil[idx] & StencilFlags.PROTECTED != 0) continue;
+
             const rgb = bitmap.getPixel(x, y);
-            const med = median3(rgb[0], rgb[1], rgb[2]);
+            const r = rgb[0];
+            const g = rgb[1];
+            const b = rgb[2];
 
-            // Only process boundary pixels (near the edge, median close to 128)
-            if (med < 100 or med > 156) continue;
+            // Check if channels agree about inside/outside
+            const r_inside = r > threshold;
+            const g_inside = g > threshold;
+            const b_inside = b > threshold;
 
-            // Check for large gradient with neighbors (indicates potential artifact)
-            var max_diff: u8 = 0;
+            // All channels agree - this is a natural edge pixel, protect it
+            if ((r_inside and g_inside and b_inside) or (!r_inside and !g_inside and !b_inside)) {
+                const med = median3(r, g, b);
+                // Only protect if near the boundary (not deep inside or outside)
+                if (med >= 90 and med <= 166) {
+                    stencil[idx] |= StencilFlags.PROTECTED;
+                }
+            }
+            // If channels disagree, don't protect - let clash detection decide
+        }
+    }
+}
+
+/// Detect pixels that clash with neighbors and need correction.
+/// Only marks non-protected pixels as errors.
+fn detectClashes(stencil: []u8, bitmap: *MsdfBitmap) void {
+    if (bitmap.width < 2 or bitmap.height < 2) return;
+
+    const threshold: u8 = 127;
+
+    var y: u32 = 0;
+    while (y < bitmap.height) : (y += 1) {
+        var x: u32 = 0;
+        while (x < bitmap.width) : (x += 1) {
+            const idx = @as(usize, y) * bitmap.width + x;
+
+            // Skip protected pixels
+            if (stencil[idx] & StencilFlags.PROTECTED != 0) continue;
+
+            const rgb = bitmap.getPixel(x, y);
+            const r = rgb[0];
+            const g = rgb[1];
+            const b = rgb[2];
+
+            // Check for channel disagreement
+            const r_inside: u8 = if (r > threshold) 1 else 0;
+            const g_inside: u8 = if (g > threshold) 1 else 0;
+            const b_inside: u8 = if (b > threshold) 1 else 0;
+            const inside_count = r_inside + g_inside + b_inside;
+
+            // Channels agree - check for spike artifacts only
+            if (inside_count == 0 or inside_count == 3) {
+                // Even if channels agree, check for spike artifacts
+                // These are pixels with median values that spike relative to neighbors
+                if (detectSpikeArtifact(bitmap, x, y)) {
+                    stencil[idx] |= StencilFlags.ERROR;
+                }
+                continue;
+            }
+
+            // Channels disagree - check for clash with neighbors
+            var has_clash = false;
             const neighbors = [_][2]i32{
                 .{ -1, 0 },
                 .{ 1, 0 },
@@ -353,53 +509,200 @@ pub fn correctErrors(bitmap: *MsdfBitmap) void {
             };
 
             for (neighbors) |offset| {
-                const nx = @as(u32, @intCast(@as(i32, @intCast(x)) + offset[0]));
-                const ny = @as(u32, @intCast(@as(i32, @intCast(y)) + offset[1]));
-                const n_rgb = bitmap.getPixel(nx, ny);
-                const n_med = median3(n_rgb[0], n_rgb[1], n_rgb[2]);
+                const nx_i = @as(i32, @intCast(x)) + offset[0];
+                const ny_i = @as(i32, @intCast(y)) + offset[1];
 
-                const diff = if (med > n_med) med - n_med else n_med - med;
-                if (diff > max_diff) max_diff = diff;
+                if (nx_i < 0 or nx_i >= @as(i32, @intCast(bitmap.width)) or
+                    ny_i < 0 or ny_i >= @as(i32, @intCast(bitmap.height)))
+                {
+                    continue;
+                }
+
+                const nx = @as(u32, @intCast(nx_i));
+                const ny = @as(u32, @intCast(ny_i));
+                const n_idx = @as(usize, ny) * bitmap.width + nx;
+
+                // Skip if neighbor is protected
+                if (stencil[n_idx] & StencilFlags.PROTECTED != 0) continue;
+
+                const n_rgb = bitmap.getPixel(nx, ny);
+
+                // Check if this pixel clashes with neighbor
+                if (detectClashBetweenPixels(rgb, n_rgb)) {
+                    // Mark the pixel farther from 0.5 as error
+                    const my_dist = distanceFrom128(rgb);
+                    const n_dist = distanceFrom128(n_rgb);
+
+                    if (my_dist >= n_dist) {
+                        has_clash = true;
+                        break;
+                    }
+                }
             }
 
-            // If there's a large gradient jump, this might be an artifact
-            if (max_diff > 40) {
-                smooth_flags[y * bitmap.width + x] = true;
+            if (has_clash) {
+                stencil[idx] |= StencilFlags.ERROR;
             }
         }
     }
+}
 
-    // Apply smoothing to flagged pixels
-    y = 1;
-    while (y < bitmap.height - 1) : (y += 1) {
-        var x: u32 = 1;
-        while (x < bitmap.width - 1) : (x += 1) {
-            if (smooth_flags[y * bitmap.width + x]) {
-                // Average median with neighbors for smoother result
-                const rgb = bitmap.getPixel(x, y);
-                const med = median3(rgb[0], rgb[1], rgb[2]);
+/// Detect spike artifacts - pixels where median spikes relative to neighbors.
+/// These appear as "notches" in the rendered output.
+fn detectSpikeArtifact(bitmap: *MsdfBitmap, x: u32, y: u32) bool {
+    const rgb = bitmap.getPixel(x, y);
+    const med = median3(rgb[0], rgb[1], rgb[2]);
 
-                var sum: u32 = med;
-                var count: u32 = 1;
+    // Only check edge-adjacent pixels (not deep inside or outside)
+    if (med < 80 or med > 176) return false;
 
-                const neighbors = [_][2]i32{
-                    .{ -1, 0 },
-                    .{ 1, 0 },
-                    .{ 0, -1 },
-                    .{ 0, 1 },
-                };
+    const neighbors = [_][2]i32{
+        .{ -1, 0 },
+        .{ 1, 0 },
+        .{ 0, -1 },
+        .{ 0, 1 },
+    };
 
-                for (neighbors) |offset| {
-                    const nx = @as(u32, @intCast(@as(i32, @intCast(x)) + offset[0]));
-                    const ny = @as(u32, @intCast(@as(i32, @intCast(y)) + offset[1]));
-                    const n_rgb = bitmap.getPixel(nx, ny);
-                    sum += median3(n_rgb[0], n_rgb[1], n_rgb[2]);
-                    count += 1;
+    var neighbor_count: u32 = 0;
+    var neighbors_darker: u32 = 0;
+    var neighbors_brighter: u32 = 0;
+    var total_diff: u32 = 0;
+
+    for (neighbors) |offset| {
+        const nx_i = @as(i32, @intCast(x)) + offset[0];
+        const ny_i = @as(i32, @intCast(y)) + offset[1];
+
+        if (nx_i < 0 or nx_i >= @as(i32, @intCast(bitmap.width)) or
+            ny_i < 0 or ny_i >= @as(i32, @intCast(bitmap.height)))
+        {
+            continue;
+        }
+
+        const nx = @as(u32, @intCast(nx_i));
+        const ny = @as(u32, @intCast(ny_i));
+        const n_rgb = bitmap.getPixel(nx, ny);
+        const n_med = median3(n_rgb[0], n_rgb[1], n_rgb[2]);
+
+        neighbor_count += 1;
+
+        const diff = if (med > n_med) med - n_med else n_med - med;
+        total_diff += diff;
+
+        if (n_med < med) {
+            neighbors_darker += 1;
+        } else if (n_med > med) {
+            neighbors_brighter += 1;
+        }
+    }
+
+    if (neighbor_count < 2) return false;
+
+    // Spike detection: pixel is much brighter/darker than ALL neighbors
+    // and the average difference is large
+    const avg_diff = total_diff / neighbor_count;
+    const is_spike = (neighbors_darker == neighbor_count or neighbors_brighter == neighbor_count) and avg_diff > 35;
+
+    return is_spike;
+}
+
+/// Check if two pixels clash (large channel differences between them).
+fn detectClashBetweenPixels(a: [3]u8, b: [3]u8) bool {
+    // Sort channel differences from largest to smallest
+    var diffs: [3]u8 = .{
+        if (a[0] > b[0]) a[0] - b[0] else b[0] - a[0],
+        if (a[1] > b[1]) a[1] - b[1] else b[1] - a[1],
+        if (a[2] > b[2]) a[2] - b[2] else b[2] - a[2],
+    };
+
+    // Sort descending
+    if (diffs[0] < diffs[1]) {
+        const tmp = diffs[0];
+        diffs[0] = diffs[1];
+        diffs[1] = tmp;
+    }
+    if (diffs[1] < diffs[2]) {
+        const tmp = diffs[1];
+        diffs[1] = diffs[2];
+        diffs[2] = tmp;
+    }
+    if (diffs[0] < diffs[1]) {
+        const tmp = diffs[0];
+        diffs[0] = diffs[1];
+        diffs[1] = tmp;
+    }
+
+    // Clash if second-largest difference exceeds threshold
+    // Lower threshold catches more artifacts on curves
+    const second_diff = diffs[1];
+    const is_a_equalized = (a[0] == a[1] and a[1] == a[2]);
+    const is_b_equalized = (b[0] == b[1] and b[1] == b[2]);
+
+    return second_diff > 25 and !is_a_equalized and !is_b_equalized;
+}
+
+/// Calculate how far a pixel's median is from 128 (edge value).
+fn distanceFrom128(rgb: [3]u8) u8 {
+    const med = median3(rgb[0], rgb[1], rgb[2]);
+    return if (med > 128) med - 128 else 128 - med;
+}
+
+/// Apply correction to pixels marked as ERROR.
+/// Uses neighbor-weighted smoothing for better results on curves.
+fn applyCorrection(stencil: []u8, bitmap: *MsdfBitmap) void {
+    var y: u32 = 0;
+    while (y < bitmap.height) : (y += 1) {
+        var x: u32 = 0;
+        while (x < bitmap.width) : (x += 1) {
+            const idx = @as(usize, y) * bitmap.width + x;
+
+            // Only correct ERROR pixels
+            if (stencil[idx] & StencilFlags.ERROR == 0) continue;
+
+            const rgb = bitmap.getPixel(x, y);
+            const med = median3(rgb[0], rgb[1], rgb[2]);
+
+            // Gather neighbor medians for weighted average
+            var sum: u32 = @as(u32, med);
+            var weight: u32 = 1;
+
+            const neighbors = [_][2]i32{
+                .{ -1, 0 },
+                .{ 1, 0 },
+                .{ 0, -1 },
+                .{ 0, 1 },
+            };
+
+            for (neighbors) |offset| {
+                const nx_i = @as(i32, @intCast(x)) + offset[0];
+                const ny_i = @as(i32, @intCast(y)) + offset[1];
+
+                if (nx_i < 0 or nx_i >= @as(i32, @intCast(bitmap.width)) or
+                    ny_i < 0 or ny_i >= @as(i32, @intCast(bitmap.height)))
+                {
+                    continue;
                 }
 
-                const smoothed: u8 = @intCast(sum / count);
-                bitmap.setPixel(x, y, .{ smoothed, smoothed, smoothed });
+                const nx = @as(u32, @intCast(nx_i));
+                const ny = @as(u32, @intCast(ny_i));
+                const n_idx = @as(usize, ny) * bitmap.width + nx;
+
+                // Give more weight to non-error neighbors
+                const n_rgb = bitmap.getPixel(nx, ny);
+                const n_med = median3(n_rgb[0], n_rgb[1], n_rgb[2]);
+
+                if (stencil[n_idx] & StencilFlags.ERROR == 0) {
+                    // Non-error neighbor gets weight 2
+                    sum += @as(u32, n_med) * 2;
+                    weight += 2;
+                } else {
+                    // Error neighbor gets weight 1
+                    sum += n_med;
+                    weight += 1;
+                }
             }
+
+            const smoothed: u8 = @intCast(sum / weight);
+            bitmap.setPixel(x, y, .{ smoothed, smoothed, smoothed });
         }
     }
 }

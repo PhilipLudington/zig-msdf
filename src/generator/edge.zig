@@ -180,13 +180,18 @@ pub const QuadraticSegment = struct {
         const d = origin.sub(p);
         const dist = d.length();
 
+        // For sign determination at endpoints, use slightly interior tangent
+        // This prevents sign flipping due to tangent discontinuities at segment junctions
+        const tangent_t = if (t <= 0.0) 0.01 else if (t >= 1.0) 0.99 else t;
+        const tangent = self.direction(tangent_t);
+
         // Determine sign using cross product with tangent
         // Convention matches msdfgen: cross < 0 means inside → negative distance
-        const tangent = self.direction(t);
         const sign: f64 = if (tangent.cross(d) < 0) -1.0 else 1.0;
 
-        // Orthogonality
-        const ortho = if (dist == 0) 0.0 else @abs(tangent.normalize().cross(d.normalize()));
+        // Orthogonality - use actual tangent at t for comparison purposes
+        const actual_tangent = self.direction(t);
+        const ortho = if (dist == 0) 0.0 else @abs(actual_tangent.normalize().cross(d.normalize()));
 
         const candidate = SignedDistance.init(sign * dist, ortho);
 

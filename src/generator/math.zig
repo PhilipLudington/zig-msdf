@@ -100,13 +100,14 @@ pub const Vec2 = struct {
 pub const SignedDistance = struct {
     /// The signed distance value (negative = inside, positive = outside).
     distance: f64,
-    /// Orthogonality factor (0 = parallel to edge, 1 = perpendicular).
-    /// Used as a tiebreaker when distances are equal.
+    /// Dot product with edge direction (0 = perpendicular, 1 = parallel).
+    /// Used as a tiebreaker when distances are equal. Lower = more perpendicular = preferred.
+    /// This matches msdfgen's SignedDistance.dot member.
     orthogonality: f64,
 
     pub const infinite = SignedDistance{
         .distance = std.math.inf(f64),
-        .orthogonality = 0,
+        .orthogonality = 1, // Parallel = worst case for tiebreaker
     };
 
     /// Create a new SignedDistance.
@@ -116,14 +117,16 @@ pub const SignedDistance = struct {
 
     /// Compare two signed distances for MSDF purposes.
     /// Returns true if `self` should be preferred over `other`.
+    /// Matches msdfgen: prefer closer distance, then lower orthogonality (dot).
     pub fn lessThan(self: SignedDistance, other: SignedDistance) bool {
         const abs_self = @abs(self.distance);
         const abs_other = @abs(other.distance);
-        // Prefer the closer distance, or if equal, the more orthogonal one
+        // Prefer the closer distance, or if equal, the lower orthogonality
+        // (lower dot = more perpendicular approach = sharper corners)
         if (abs_self != abs_other) {
             return abs_self < abs_other;
         }
-        return self.orthogonality > other.orthogonality;
+        return self.orthogonality < other.orthogonality;
     }
 };
 
@@ -452,10 +455,11 @@ test "SignedDistance.lessThan" {
     try std.testing.expect(near.lessThan(far));
     try std.testing.expect(!far.lessThan(near));
 
-    // Equal distance: prefer higher orthogonality
+    // Equal distance: prefer lower orthogonality (more perpendicular approach)
+    // This matches msdfgen where lower dot = more perpendicular = sharper corners
     const low_ortho = SignedDistance.init(1.0, 0.3);
     const high_ortho = SignedDistance.init(1.0, 0.7);
-    try std.testing.expect(high_ortho.lessThan(low_ortho));
+    try std.testing.expect(low_ortho.lessThan(high_ortho));
 }
 
 test "Bounds.include" {

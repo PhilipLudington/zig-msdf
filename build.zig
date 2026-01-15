@@ -259,4 +259,23 @@ pub fn build(b: *std.Build) void {
     const run_analyze = b.addRunArtifact(analyze_tests);
     const analyze_step = b.step("analyze-artifacts", "Analyze MSDF artifacts in detail");
     analyze_step.dependOn(&run_analyze.step);
+
+    // Artifact diagnostic tool
+    const artifact_diag_exe = b.addExecutable(.{
+        .name = "artifact_diagnostic",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/artifact_diagnostic.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(artifact_diag_exe);
+
+    const run_artifact_diag = b.addRunArtifact(artifact_diag_exe);
+    run_artifact_diag.step.dependOn(b.getInstallStep());
+    const artifact_diag_step = b.step("artifact-diag", "Run artifact diagnostic tool");
+    artifact_diag_step.dependOn(&run_artifact_diag.step);
 }

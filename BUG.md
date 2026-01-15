@@ -1,7 +1,7 @@
 # MSDF Artifacts on Curved Glyphs
 
 **Issue:** GitHub Issue #1
-**Status:** Partially fixed, further work needed
+**Status:** Corner rounding FIXED, curve artifacts significantly improved (84-93% artifact-free)
 
 ## Problem Description
 
@@ -11,9 +11,42 @@ MSDF (Multi-channel Signed Distance Field) rendering shows visible jagged artifa
 
 Artifacts are most visible at high zoom levels (8x) and appear as stair-stepping along smooth curves.
 
-## Root Cause Analysis
+## Root Cause: Confirmed
+
+**The issue is definitively in zig-msdf's atlas generation, NOT the rendering code.**
+
+This was proven by:
+1. Building an atlas comparison tool (`zig build run-compare` in zig-msdf-examples)
+2. Generating identical glyphs with both zig-msdf and reference msdfgen
+3. Rendering both atlases with the exact same shader/rendering code
+4. **Result:** msdfgen atlas renders perfectly; zig-msdf atlas shows artifacts
+
+### Visual Evidence
+
+Side-by-side atlas comparison (in zig-msdf-examples):
+- `zig-msdf-atlas/atlas.ppm` - shows problematic color transitions
+- `msdfgen-atlas/atlas.png` - shows correct MSDF color boundaries
+
+The atlases look visibly different, particularly in edge coloring at curve inflection points.
+
+### Comparison Metrics
+
+| Metric | zig-msdf | msdfgen |
+|--------|----------|---------|
+| Atlas size | 480x480 | 332x332 |
+| Glyph count | 94 | 95 |
+| Visual quality | Artifacts on curves | Clean |
+
+## Technical Analysis
 
 MSDF works by assigning RGB channels to different edge segments. The median of RGB at each pixel reconstructs the distance field. Artifacts occur when channels disagree about inside/outside status with significant spread.
+
+The issue is in **zig-msdf's edge coloring algorithm**. For proper MSDF rendering, edges must be colored (RGB channels) such that adjacent edges at "corners" have different colors. When this isn't done correctly, the median calculation in the shader produces artifacts.
+
+For the "S" shape:
+- The curve has an **inflection point** where curvature direction reverses
+- TrueType fonts represent this as multiple quadratic beziers
+- The coloring algorithm should detect where curvature sign changes and treat those points as color boundaries
 
 ### Channel Disagreement Metrics (DejaVu Sans, 48px)
 
@@ -27,7 +60,7 @@ MSDF works by assigning RGB channels to different edge segments. The median of R
 
 **Key insight:** While extreme artifacts (spread > 150) affect ~10% of boundary pixels, moderate disagreements (spread > 100) affect ~30-35% of pixels, which still cause visible artifacts.
 
-## Fixes Implemented
+## Fixes Implemented (Partial)
 
 ### 1. Curvature Reversal Detection (commit 85b0f5b)
 
@@ -67,6 +100,10 @@ if (curved_count >= max_same_color_curves) {
 }
 ```
 
+### 4. Error Correction Post-Processing (commits d5cf487, 79d422f)
+
+Added MSDF error correction as a post-processing step.
+
 ## Results After Fixes
 
 ### Before (Geneva font, 64px):
@@ -79,55 +116,235 @@ if (curved_count >= max_same_color_curves) {
 - 2 artifact-free rate: 92.9%
 - 3 artifact-free rate: 90.2%
 
-## Remaining Issue
+## Remaining Issue: Rounded Corners - FIXED
 
-Despite improvements, ~10% of boundary pixels still have high-spread artifacts (spread > 150), and ~30% have moderate artifacts (spread > 100). Visual artifacts remain visible at high zoom.
+~~Despite improvements to artifacts, corners appear rounded compared to msdfgen output.~~
 
-### Why Artifacts Persist
+**Fixed in January 2026** by implementing msdfgen-style selective error correction with corner protection.
 
-The edge coloring algorithm assigns colors to minimize conflicts, but cannot eliminate all cases where:
-1. Multiple edges of the same color contribute conflicting distances
-2. Thin parts of glyphs have facing edges that interfere
-3. Complex curve intersections create unavoidable channel disagreements
+### The Fix
 
-## Recommended Next Step: Error Correction
+The issue was that error correction was too aggressive - it flattened ALL pixels with channel disagreement to the median value. But at corners, channels SHOULD disagree - this is what creates sharp corners.
 
-The msdfgen reference implementation uses **error correction** as a post-processing step. This technique:
+**Solution implemented in `src/generator/generate.zig`:**
 
-1. Scans each pixel after MSDF generation
-2. Detects where channels disagree about inside/outside
-3. Clamps minority channels to not cross the 0.5 threshold
-4. Ensures median is determined by majority channels
+1. **Stencil buffer** - Added `StencilFlags` with PROTECTED and ERROR flags
+2. **Corner protection** (`protectCorners`) - Finds edges where colors change, marks 3x3 region around corner points as PROTECTED
+3. **Edge protection** (`protectEdges`) - Marks edge-adjacent pixels with low channel spread as PROTECTED
+4. **Selective clash detection** (`detectClashes`) - Only marks non-protected pixels with actual artifacts as ERROR
+5. **Targeted correction** (`applyCorrection`) - Only applies median to ERROR pixels, leaving PROTECTED pixels intact
 
-### Implementation Approach
+### Results
 
-```zig
-fn errorCorrection(bitmap: *MsdfBitmap) void {
-    for each pixel (x, y):
-        r, g, b = getPixel(x, y)
+- M corners: Now sharp (previously rounded)
+- A, W, V corners: Improved
+- Line-curve junctions: Better defined
 
-        // Count channels saying "inside" (> 127)
-        inside_count = (r > 127) + (g > 127) + (b > 127)
+### Previous Issue (for reference)
 
-        if inside_count == 1 or inside_count == 2:
-            // Channels disagree - clamp minority to majority
-            if inside_count >= 2:
-                // Majority says inside - clamp low channel up
-                clamp_to = 128
-            else:
-                // Majority says outside - clamp high channel down
-                clamp_to = 127
+This was most visible on:
+- Angular characters: M, A, W, V (line-line junctions)
+- Mixed characters: D, P, B (line-curve junctions)
 
-            // Apply clamping to fix the median
-            ...
-}
+### Investigation Summary (January 2026)
+
+#### What msdfgen Does Differently
+
+Deep study of msdfgen's `core/edge-segments.cpp` revealed key differences:
+
+1. **Perpendicular Distance for Linear Segments**
+
+   For interior points (0 < param < 1), msdfgen uses perpendicular distance to the infinite line, not true distance to the segment:
+   ```cpp
+   // msdfgen LinearSegment::signedDistance
+   if (param > 0 && param < 1) {
+       double orthoDistance = dotProduct(ab.getOrthonormal(false), aq);
+       if (fabs(orthoDistance) < endpointDistance)
+           return SignedDistance(orthoDistance, 0);
+   }
+   ```
+   This creates sharper corners because equidistant contours are straight lines, not arcs.
+
+2. **Orthogonality Tiebreaker**
+
+   When distances are equal, msdfgen uses orthogonality as a tiebreaker:
+   - Interior points: orthogonality = 0 (best - perpendicular approach)
+   - Endpoint regions: orthogonality = `abs(dot(direction, distance_vector))` (alignment)
+
+3. **Sign Convention**
+
+   msdfgen uses `nonZeroSign(crossProduct(aq, ab))` which equals `-dir.cross(aq)`.
+   Our convention `dir.cross(aq) < 0` is equivalent but inverted in naming.
+
+#### Attempted Fixes and Results
+
+| Change | Result |
+|--------|--------|
+| Perpendicular distance for LinearSegment interior | 'M' corners sharp, but artifacts appeared elsewhere |
+| Changed orthogonality from `cross` to `dot` | Major artifacts through 'S', 'D' - broke tiebreaking |
+| Combined perpendicular + orthogonality changes | Made everything worse |
+| Perpendicular only, keep original orthogonality | 'M' became rounded, artifacts appeared |
+
+#### Key Observations
+
+1. **Without error correction**: 'M' had sharp corners with perpendicular distance, but 'S' had major artifacts
+2. **With error correction**: Error correction may be destroying the channel differences that create sharp corners
+3. **The changes interact**: Perpendicular distance, orthogonality, and error correction form a complex system
+
+#### Why It's Hard
+
+The rounded corner issue is subtle because:
+1. MSDF corner sharpness depends on multiple interacting systems
+2. Distance calculation affects which edge "wins" at each pixel
+3. Error correction can undo the channel differences needed for corners
+4. The tiebreaker (orthogonality) determines behavior when distances are equal
+
+### Possible Root Causes
+
+1. **Error Correction Too Aggressive** - Currently replaces disagreeing pixels with median, destroying corner information
+2. **Edge Coloring at Corners** - Colors may not differ enough across corners
+3. **Distance Function Subtle Differences** - Small numerical differences accumulate
+4. **Orthogonality Tiebreaker** - Our `cross` vs msdfgen's `dot` changes which edge wins ties
+
+### Brainstorm: Next Steps
+
+1. **Smarter Error Correction**
+   - msdfgen's error correction is more selective
+   - Only fix pixels that would cause interpolation artifacts
+   - Preserve intentional channel disagreement at corners
+   - Look at msdfgen's `msdf-error-correction.cpp`
+
+2. **Edge Coloring Review**
+   - Ensure edges at true corners have maximally different colors
+   - Check if coloring algorithm detects all corners
+   - Compare edge colors directly with msdfgen output
+
+3. **Instrument and Compare**
+   - Add debug output showing which edge wins at each pixel
+   - Compare pixel-by-pixel with msdfgen to find where they diverge
+   - Create a minimal test case (single corner) for debugging
+
+4. **Alternative Approach**
+   - Instead of matching msdfgen exactly, focus on visual quality
+   - Accept some differences if corners are "sharp enough"
+   - Consider different error correction strategies
+
+5. **Study msdfgen Error Correction**
+   - msdfgen has sophisticated error correction in `msdf-error-correction.cpp`
+   - Uses "clash detection" to find problematic interpolation regions
+   - Preserves corner information while fixing artifacts
+
+## Curve Artifacts Investigation (January 2026)
+
+**Status:** Color diversity restored - artifact rates significantly improved
+
+### Root Cause Found
+
+**The "edge segment boundary" hypothesis was WRONG.** Diagnostic analysis revealed:
+
+1. **Only 2.7% of artifacts occur at segment endpoints** (t < 0.02 or t > 0.98)
+2. **Artifacts span entire segments** - t values from 0.02 to 0.97
+3. **No sign consistency issues at junctions** - 0% problematic junctions
+
+### Actual Root Cause: Missing Color Diversity
+
+Local changes to `coloring.zig` had **removed** the color diversity fix (commit c0281ab):
+
+| Feature | Committed Version | Local Changes |
+|---------|-------------------|---------------|
+| Corner threshold | 60° | 90° |
+| Curvature reversal detection | ✓ | ✗ |
+| Color diversity in long curves | Every 3 edges | None |
+| No-corner fallback | Alternating colors | Single color (cyan) |
+
+The changes gave **all edges of smooth curves the same color** (cyan = G+B). This left the R channel with no nearby edges - its distance came from the opposite side of the glyph, causing massive channel disagreement.
+
+**Example artifact pixel analysis (before fix):**
 ```
+RGB=(91,255,91) → R=G=91 (outside), B=255 (inside)
+Distances: R=41.01, G=-518.06, B=41.01
+```
+The G channel distance of -518 came from a far-away edge!
+
+### The Fix: Restore Color Diversity
+
+Reverting `coloring.zig` to the committed version restored:
+- 60° corner threshold (more corners detected)
+- Curvature sign reversal detection
+- Color switching every 3 curved edges
+- Alternating colors for smooth contours
+
+### Results After Fix
+
+| Character | Before | After | Improvement |
+|-----------|--------|-------|-------------|
+| S | 83.9% | **92.6%** | +8.7% |
+| D | 81.5% | **84.5%** | +3.0% |
+| 2 | 87.3% | **93.0%** | +5.7% |
+| 3 | 87.1% | **91.1%** | +4.0% |
+
+**Artifact gap now negative (-2.3%)** - S-curves have BETTER artifact rates than angular characters!
+
+### Diagnostic Tool Created
+
+Added `tests/artifact_diagnostic.zig` with:
+- Per-pixel artifact analysis showing segment index, parameter t, and color
+- Distance values for each RGB channel
+- Sign consistency analysis at segment junctions
+- Edge color visualization
+
+Run with: `zig build artifact-diag`
+
+### Remaining Work
+
+1. **Some artifacts remain** (~7-16% of boundary pixels)
+   - These are on outer image edges where opposite sides of curves interfere
+   - May be false positives from detection algorithm
+   - Consider msdfgen's pseudo-distance approach for further improvement
+
+2. **Edge.zig interior tangent fix** - Still present in local changes
+   - Uses t=0.01/0.99 for sign determination at endpoints
+   - May help prevent edge cases, worth keeping
+
+### Relevant Code Locations
+
+| File | What |
+|------|------|
+| `src/generator/edge.zig` | Distance calculations (LinearSegment, QuadraticSegment, CubicSegment) |
+| `src/generator/generate.zig` | Error correction (`correctErrors`, `correctErrorsWithProtection`) |
+| `src/generator/coloring.zig` | Edge coloring algorithm |
+| msdfgen `core/edge-segments.cpp` | Reference distance calculations |
+| msdfgen `msdf-error-correction.cpp` | Reference error correction |
+
+## Comparison Tool
+
+A comparison tool was built in zig-msdf-examples to aid debugging:
+
+```bash
+cd ../zig-msdf-examples
+zig build run-compare
+```
+
+Controls:
+- SPACE - Toggle between zig-msdf and msdfgen atlas
+- T - Toggle atlas view / text view
+- E - Export zig-msdf atlas to `zig-msdf-atlas/` directory
+- UP/DOWN or Mouse wheel - Adjust scale
+- ESC - Exit
 
 ## Files Modified
 
-- `src/generator/coloring.zig` - Edge coloring algorithm
-- `src/generator/edge.zig` - Added `curvatureSign()` method
+- `src/generator/coloring.zig` - Edge coloring algorithm, corner angle threshold (now 90°)
+- `src/generator/edge.zig` - Added `curvatureSign()` method, interior tangent fix for endpoints
 - `src/generator/contour.zig` - Added `splitAtInflections()`
+- `src/generator/generate.zig` - Selective error correction with corner/edge protection:
+  - `StencilFlags` - PROTECTED and ERROR pixel flags
+  - `correctErrorsWithProtection()` - Main entry point with shape/transform
+  - `protectCorners()` - Marks 3x3 region around color-change points
+  - `protectEdges()` - Marks edge pixels where channels agree
+  - `detectClashes()` - Finds artifacts, includes spike detection
+  - `applyCorrection()` - Neighbor-weighted smoothing for error pixels
+- `src/msdf.zig` - Calls `correctErrorsWithProtection()` with shape info
 - `tests/reference_test.zig` - Artifact detection tests
 - `tests/analyze_artifacts.zig` - Detailed artifact analysis
 
@@ -146,6 +363,13 @@ zig build debug-s-curvature
 # Test with DejaVu Sans font
 zig build test-dejavu
 ```
+
+## Environment
+
+- Font: DejaVu Sans (TrueType, quadratic beziers)
+- Glyph size: 48px
+- px_range: 4.0
+- Platform: macOS (Metal shaders) / Linux (SPIR-V)
 
 ## References
 
