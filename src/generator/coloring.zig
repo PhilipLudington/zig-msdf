@@ -197,11 +197,17 @@ fn angleBetween(a: Vec2, b: Vec2) f64 {
 }
 
 /// Color edges between identified corners.
+/// For long curved segments, alternates colors every few edges to prevent
+/// self-interference artifacts when opposite sides of a curve are too close.
 fn colorBetweenCorners(contour: *Contour, corners: []const usize) void {
     const edge_count = contour.edges.len;
 
     // Available colors for alternating
     const color_set = [_]EdgeColor{ .cyan, .magenta, .yellow };
+
+    // Maximum consecutive curved edges with the same color before switching.
+    // This prevents self-interference when curves loop back on themselves.
+    const max_same_color_curves = 3;
 
     // Process each segment between corners
     var segment_color_idx: usize = 0;
@@ -212,21 +218,47 @@ fn colorBetweenCorners(contour: *Contour, corners: []const usize) void {
         else
             corners[0]; // Wrap around
 
-        // Determine the color for this segment
-        const primary_color = color_set[segment_color_idx % color_set.len];
+        // Count edges in this segment
+        var segment_len: usize = 0;
+        var idx = corner_start;
+        while (true) {
+            segment_len += 1;
+            idx = (idx + 1) % edge_count;
+            if (idx == corner_end) break;
+        }
 
-        // Color all edges from corner_start to corner_end (exclusive)
+        // Color edges in this segment
+        // For long segments, alternate colors every few curved edges
         var i = corner_start;
+        var curved_count: usize = 0;
+        var current_color_idx = segment_color_idx;
 
         while (true) {
-            contour.edges[i].setColor(primary_color);
+            const edge = &contour.edges[i];
+            const color = color_set[current_color_idx % color_set.len];
+            edge.setColor(color);
+
+            // Track curved edges and switch colors periodically for long curves
+            const is_curved = switch (edge.*) {
+                .quadratic, .cubic => true,
+                .linear => false,
+            };
+
+            if (is_curved) {
+                curved_count += 1;
+                // Switch color after max_same_color_curves curved edges
+                // This ensures color diversity along long curves
+                if (curved_count >= max_same_color_curves) {
+                    curved_count = 0;
+                    current_color_idx += 1;
+                }
+            }
 
             i = (i + 1) % edge_count;
-
             if (i == corner_end) break;
         }
 
-        // Move to next color for the next segment
+        // Move to next base color for the next segment
         segment_color_idx += 1;
     }
 }

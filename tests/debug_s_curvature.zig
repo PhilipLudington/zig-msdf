@@ -87,6 +87,54 @@ test "debug D character curvature" {
     printShapeInfo(&shape);
 }
 
+test "debug G character curvature" {
+    const allocator = std.testing.allocator;
+
+    var font = msdf.Font.fromFile(allocator, "/System/Library/Fonts/Geneva.ttf") catch |err| {
+        std.debug.print("Error loading font: {}\n", .{err});
+        return;
+    };
+    defer font.deinit();
+
+    var shape = loadGlyphShape(allocator, font, 'G') catch |err| {
+        std.debug.print("Error getting shape: {}\n", .{err});
+        return;
+    };
+    defer shape.deinit();
+
+    std.debug.print("\n=== G character BEFORE coloring ===\n", .{});
+    printShapeInfo(&shape);
+
+    msdf.coloring.colorEdgesSimple(&shape);
+
+    std.debug.print("\n=== G character AFTER coloring ===\n", .{});
+    printShapeInfo(&shape);
+}
+
+test "debug P character curvature" {
+    const allocator = std.testing.allocator;
+
+    var font = msdf.Font.fromFile(allocator, "/System/Library/Fonts/Geneva.ttf") catch |err| {
+        std.debug.print("Error loading font: {}\n", .{err});
+        return;
+    };
+    defer font.deinit();
+
+    var shape = loadGlyphShape(allocator, font, 'P') catch |err| {
+        std.debug.print("Error getting shape: {}\n", .{err});
+        return;
+    };
+    defer shape.deinit();
+
+    std.debug.print("\n=== P character BEFORE coloring ===\n", .{});
+    printShapeInfo(&shape);
+
+    msdf.coloring.colorEdgesSimple(&shape);
+
+    std.debug.print("\n=== P character AFTER coloring ===\n", .{});
+    printShapeInfo(&shape);
+}
+
 fn printShapeInfo(shape: *const Shape) void {
     std.debug.print("Contours: {d}\n", .{shape.contours.len});
 
