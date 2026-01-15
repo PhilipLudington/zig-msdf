@@ -1,6 +1,7 @@
 .{
     .name = .zig_msdf,
     .version = "0.1.0",
+    .fingerprint = 0xd395afe6d9817bd6,
     .minimum_zig_version = "0.14.0",
     .paths = .{
         "build.zig",

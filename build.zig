@@ -227,4 +227,36 @@ pub fn build(b: *std.Build) void {
     const run_s_curvature = b.addRunArtifact(s_curvature_tests);
     const s_curvature_step = b.step("debug-s-curvature", "Debug S character curvature values");
     s_curvature_step.dependOn(&run_s_curvature.step);
+
+    // DejaVu Sans test (uses font from examples repo)
+    const dejavu_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/dejavu_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+
+    const run_dejavu = b.addRunArtifact(dejavu_tests);
+    const dejavu_step = b.step("test-dejavu", "Test DejaVu Sans font S-curves");
+    dejavu_step.dependOn(&run_dejavu.step);
+
+    // Detailed artifact analysis test
+    const analyze_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/analyze_artifacts.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+
+    const run_analyze = b.addRunArtifact(analyze_tests);
+    const analyze_step = b.step("analyze-artifacts", "Analyze MSDF artifacts in detail");
+    analyze_step.dependOn(&run_analyze.step);
 }

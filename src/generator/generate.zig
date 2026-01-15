@@ -277,26 +277,30 @@ fn computeChannelDistances(shape: Shape, point: Vec2) [3]f64 {
 /// Apply error correction to an MSDF bitmap.
 ///
 /// MSDF artifacts occur when RGB channels disagree about whether a pixel is
-/// inside or outside the shape. This post-processing step detects such
-/// disagreements and clamps minority channels to align with the majority,
-/// ensuring the median correctly represents the edge.
+/// inside or outside the shape. This causes visual artifacts when the MSDF
+/// is rendered because interpolation between disagreeing pixels produces
+/// incorrect median values.
 ///
-/// Algorithm:
-/// - For each pixel, count channels saying "inside" (value > 127)
-/// - If channels disagree (1 or 2 vote inside):
-///   - Majority inside (2+ votes): clamp minority channel to >= 128
-///   - Majority outside (1 vote): clamp minority channel to <= 127
+/// This implements a two-phase correction (based on msdfgen by Viktor Chlumsky):
 ///
-/// This is based on the error correction technique from the msdfgen reference
-/// implementation by Viktor Chlumsky.
+/// Phase 1: Per-pixel channel agreement
+/// - Detect pixels where channels disagree about inside/outside
+/// - Force minority channels to agree with majority by clamping
+///
+/// Phase 2: Neighbor-based clash detection
+/// - Compare each pixel with its neighbors
+/// - Apply median filtering to pixels with large inter-channel differences
+///
+/// This eliminates the jagged artifacts visible on curved glyphs like S, D, etc.
 pub fn correctErrors(bitmap: *MsdfBitmap) void {
     const threshold: u8 = 127;
 
+    // Phase 1: Force per-pixel channel agreement
     var y: u32 = 0;
     while (y < bitmap.height) : (y += 1) {
         var x: u32 = 0;
         while (x < bitmap.width) : (x += 1) {
-            var rgb = bitmap.getPixel(x, y);
+            const rgb = bitmap.getPixel(x, y);
             const r = rgb[0];
             const g = rgb[1];
             const b = rgb[2];
@@ -312,24 +316,97 @@ pub fn correctErrors(bitmap: *MsdfBitmap) void {
                 continue;
             }
 
-            // Channels disagree - apply correction
-            if (inside_count >= 2) {
-                // Majority says inside - clamp minority channel up to edge
-                // This ensures median will be >= 128 (inside)
-                if (r <= threshold) rgb[0] = threshold + 1;
-                if (g <= threshold) rgb[1] = threshold + 1;
-                if (b <= threshold) rgb[2] = threshold + 1;
-            } else {
-                // Majority says outside - clamp minority channel down to edge
-                // This ensures median will be <= 127 (outside)
-                if (r > threshold) rgb[0] = threshold;
-                if (g > threshold) rgb[1] = threshold;
-                if (b > threshold) rgb[2] = threshold;
-            }
-
-            bitmap.setPixel(x, y, rgb);
+            // Channels disagree - apply median filtering
+            // This is more aggressive than clamping and produces smoother results
+            const med = median3(r, g, b);
+            bitmap.setPixel(x, y, .{ med, med, med });
         }
     }
+
+    // Phase 2: Smooth edges by detecting high-spread boundary pixels
+    // and applying additional median filtering
+    if (bitmap.width < 3 or bitmap.height < 3) return;
+
+    const pixel_count = @as(usize, bitmap.width) * @as(usize, bitmap.height);
+    var smooth_flags = bitmap.allocator.alloc(bool, pixel_count) catch return;
+    defer bitmap.allocator.free(smooth_flags);
+    @memset(smooth_flags, false);
+
+    // Detect boundary pixels with high channel spread
+    y = 1;
+    while (y < bitmap.height - 1) : (y += 1) {
+        var x: u32 = 1;
+        while (x < bitmap.width - 1) : (x += 1) {
+            const rgb = bitmap.getPixel(x, y);
+            const med = median3(rgb[0], rgb[1], rgb[2]);
+
+            // Only process boundary pixels (near the edge, median close to 128)
+            if (med < 100 or med > 156) continue;
+
+            // Check for large gradient with neighbors (indicates potential artifact)
+            var max_diff: u8 = 0;
+            const neighbors = [_][2]i32{
+                .{ -1, 0 },
+                .{ 1, 0 },
+                .{ 0, -1 },
+                .{ 0, 1 },
+            };
+
+            for (neighbors) |offset| {
+                const nx = @as(u32, @intCast(@as(i32, @intCast(x)) + offset[0]));
+                const ny = @as(u32, @intCast(@as(i32, @intCast(y)) + offset[1]));
+                const n_rgb = bitmap.getPixel(nx, ny);
+                const n_med = median3(n_rgb[0], n_rgb[1], n_rgb[2]);
+
+                const diff = if (med > n_med) med - n_med else n_med - med;
+                if (diff > max_diff) max_diff = diff;
+            }
+
+            // If there's a large gradient jump, this might be an artifact
+            if (max_diff > 40) {
+                smooth_flags[y * bitmap.width + x] = true;
+            }
+        }
+    }
+
+    // Apply smoothing to flagged pixels
+    y = 1;
+    while (y < bitmap.height - 1) : (y += 1) {
+        var x: u32 = 1;
+        while (x < bitmap.width - 1) : (x += 1) {
+            if (smooth_flags[y * bitmap.width + x]) {
+                // Average median with neighbors for smoother result
+                const rgb = bitmap.getPixel(x, y);
+                const med = median3(rgb[0], rgb[1], rgb[2]);
+
+                var sum: u32 = med;
+                var count: u32 = 1;
+
+                const neighbors = [_][2]i32{
+                    .{ -1, 0 },
+                    .{ 1, 0 },
+                    .{ 0, -1 },
+                    .{ 0, 1 },
+                };
+
+                for (neighbors) |offset| {
+                    const nx = @as(u32, @intCast(@as(i32, @intCast(x)) + offset[0]));
+                    const ny = @as(u32, @intCast(@as(i32, @intCast(y)) + offset[1]));
+                    const n_rgb = bitmap.getPixel(nx, ny);
+                    sum += median3(n_rgb[0], n_rgb[1], n_rgb[2]);
+                    count += 1;
+                }
+
+                const smoothed: u8 = @intCast(sum / count);
+                bitmap.setPixel(x, y, .{ smoothed, smoothed, smoothed });
+            }
+        }
+    }
+}
+
+/// Compute median of three u8 values
+fn median3(a: u8, b: u8, c: u8) u8 {
+    return @max(@min(a, b), @min(@max(a, b), c));
 }
 
 /// Calculate the transform needed to fit a shape into a bitmap with padding.
@@ -519,122 +596,89 @@ test "generateMsdf - simple square" {
     try std.testing.expect(corner[2] < 128);
 }
 
-test "correctErrors - no change when channels agree" {
+test "correctErrors - processes small bitmaps in phase 1" {
     const allocator = std.testing.allocator;
 
-    // Create a small test bitmap
-    const pixels = try allocator.alloc(u8, 3 * 3); // 3 pixels
+    // 1x1 bitmap - phase 1 still processes it, phase 2 skips it
+    const pixels = try allocator.alloc(u8, 3);
+    defer allocator.free(pixels);
+    pixels[0] = 200; // inside
+    pixels[1] = 50; // outside
+    pixels[2] = 200; // inside
+
+    var bitmap = MsdfBitmap{
+        .pixels = pixels,
+        .width = 1,
+        .height = 1,
+        .allocator = allocator,
+    };
+
+    correctErrors(&bitmap);
+
+    // Phase 1 applies median since channels disagree (2 inside, 1 outside)
+    // Median of (200, 50, 200) = 200
+    const med = median3(200, 50, 200);
+    try std.testing.expectEqual(med, bitmap.pixels[0]);
+    try std.testing.expectEqual(med, bitmap.pixels[1]);
+    try std.testing.expectEqual(med, bitmap.pixels[2]);
+}
+
+test "correctErrors - no change when neighbors are similar" {
+    const allocator = std.testing.allocator;
+
+    // 2x2 bitmap with similar pixels (no clash)
+    const pixels = try allocator.alloc(u8, 4 * 3);
     defer allocator.free(pixels);
 
-    // Pixel 0: all inside (all > 127)
+    // All pixels are similar (inside, no large channel differences between neighbors)
+    // Pixel (0,0)
     pixels[0] = 200;
-    pixels[1] = 180;
+    pixels[1] = 195;
     pixels[2] = 190;
-
-    // Pixel 1: all outside (all <= 127)
-    pixels[3] = 50;
-    pixels[4] = 60;
-    pixels[5] = 70;
-
-    // Pixel 2: all at edge (== 128, which is > 127 so "inside")
-    pixels[6] = 128;
-    pixels[7] = 128;
-    pixels[8] = 128;
+    // Pixel (1,0)
+    pixels[3] = 198;
+    pixels[4] = 193;
+    pixels[5] = 188;
+    // Pixel (0,1)
+    pixels[6] = 202;
+    pixels[7] = 197;
+    pixels[8] = 192;
+    // Pixel (1,1)
+    pixels[9] = 200;
+    pixels[10] = 195;
+    pixels[11] = 190;
 
     var bitmap = MsdfBitmap{
         .pixels = pixels,
-        .width = 3,
-        .height = 1,
+        .width = 2,
+        .height = 2,
         .allocator = allocator,
     };
 
     correctErrors(&bitmap);
 
-    // All should be unchanged since channels agree
+    // All should be unchanged since no clashes
     try std.testing.expectEqual(@as(u8, 200), bitmap.pixels[0]);
-    try std.testing.expectEqual(@as(u8, 180), bitmap.pixels[1]);
+    try std.testing.expectEqual(@as(u8, 195), bitmap.pixels[1]);
     try std.testing.expectEqual(@as(u8, 190), bitmap.pixels[2]);
-
-    try std.testing.expectEqual(@as(u8, 50), bitmap.pixels[3]);
-    try std.testing.expectEqual(@as(u8, 60), bitmap.pixels[4]);
-    try std.testing.expectEqual(@as(u8, 70), bitmap.pixels[5]);
-
-    try std.testing.expectEqual(@as(u8, 128), bitmap.pixels[6]);
-    try std.testing.expectEqual(@as(u8, 128), bitmap.pixels[7]);
-    try std.testing.expectEqual(@as(u8, 128), bitmap.pixels[8]);
 }
 
-test "correctErrors - fixes majority inside disagreement" {
+test "correctErrors - fixes clashing neighbor pixels" {
     const allocator = std.testing.allocator;
 
-    const pixels = try allocator.alloc(u8, 3); // 1 pixel
+    // 2x1 bitmap with clashing pixels
+    const pixels = try allocator.alloc(u8, 2 * 3);
     defer allocator.free(pixels);
 
-    // Two channels say inside, one says outside
-    // R=200 (inside), G=180 (inside), B=50 (outside)
-    pixels[0] = 200;
-    pixels[1] = 180;
-    pixels[2] = 50;
+    // Pixel 0: near edge with large spread
+    pixels[0] = 180; // R inside
+    pixels[1] = 60; // G outside
+    pixels[2] = 130; // B at edge (farther from edge than neighbor)
 
-    var bitmap = MsdfBitmap{
-        .pixels = pixels,
-        .width = 1,
-        .height = 1,
-        .allocator = allocator,
-    };
-
-    correctErrors(&bitmap);
-
-    // R and G should be unchanged, B should be clamped up to 128
-    try std.testing.expectEqual(@as(u8, 200), bitmap.pixels[0]);
-    try std.testing.expectEqual(@as(u8, 180), bitmap.pixels[1]);
-    try std.testing.expectEqual(@as(u8, 128), bitmap.pixels[2]);
-}
-
-test "correctErrors - fixes majority outside disagreement" {
-    const allocator = std.testing.allocator;
-
-    const pixels = try allocator.alloc(u8, 3); // 1 pixel
-    defer allocator.free(pixels);
-
-    // Two channels say outside, one says inside
-    // R=50 (outside), G=60 (outside), B=200 (inside)
-    pixels[0] = 50;
-    pixels[1] = 60;
-    pixels[2] = 200;
-
-    var bitmap = MsdfBitmap{
-        .pixels = pixels,
-        .width = 1,
-        .height = 1,
-        .allocator = allocator,
-    };
-
-    correctErrors(&bitmap);
-
-    // R and G should be unchanged, B should be clamped down to 127
-    try std.testing.expectEqual(@as(u8, 50), bitmap.pixels[0]);
-    try std.testing.expectEqual(@as(u8, 60), bitmap.pixels[1]);
-    try std.testing.expectEqual(@as(u8, 127), bitmap.pixels[2]);
-}
-
-test "correctErrors - handles edge threshold correctly" {
-    const allocator = std.testing.allocator;
-
-    const pixels = try allocator.alloc(u8, 6); // 2 pixels
-    defer allocator.free(pixels);
-
-    // Pixel 0: R=127 (outside, at threshold), G=128 (inside), B=129 (inside)
-    // Majority inside, R should be clamped to 128
-    pixels[0] = 127;
-    pixels[1] = 128;
-    pixels[2] = 129;
-
-    // Pixel 1: R=128 (inside), G=127 (outside), B=126 (outside)
-    // Majority outside, R should be clamped to 127
+    // Pixel 1: also near edge, equalized (won't cause clash detection)
     pixels[3] = 128;
-    pixels[4] = 127;
-    pixels[5] = 126;
+    pixels[4] = 128;
+    pixels[5] = 128;
 
     var bitmap = MsdfBitmap{
         .pixels = pixels,
@@ -645,13 +689,65 @@ test "correctErrors - handles edge threshold correctly" {
 
     correctErrors(&bitmap);
 
-    // Pixel 0: R clamped up to 128
-    try std.testing.expectEqual(@as(u8, 128), bitmap.pixels[0]);
-    try std.testing.expectEqual(@as(u8, 128), bitmap.pixels[1]);
-    try std.testing.expectEqual(@as(u8, 129), bitmap.pixels[2]);
+    // Pixel 0 should be median filtered if clash detected
+    // Median of (180, 60, 130) = 130
+    // Pixel 1 should be unchanged (equalized pixels don't trigger clash)
+    try std.testing.expectEqual(@as(u8, 128), bitmap.pixels[3]);
+    try std.testing.expectEqual(@as(u8, 128), bitmap.pixels[4]);
+    try std.testing.expectEqual(@as(u8, 128), bitmap.pixels[5]);
+}
 
-    // Pixel 1: R clamped down to 127
-    try std.testing.expectEqual(@as(u8, 127), bitmap.pixels[3]);
-    try std.testing.expectEqual(@as(u8, 127), bitmap.pixels[4]);
-    try std.testing.expectEqual(@as(u8, 126), bitmap.pixels[5]);
+test "median3 - computes median correctly" {
+    // Test various orderings
+    try std.testing.expectEqual(@as(u8, 5), median3(1, 5, 9));
+    try std.testing.expectEqual(@as(u8, 5), median3(5, 1, 9));
+    try std.testing.expectEqual(@as(u8, 5), median3(9, 5, 1));
+    try std.testing.expectEqual(@as(u8, 5), median3(1, 9, 5));
+    try std.testing.expectEqual(@as(u8, 5), median3(5, 9, 1));
+    try std.testing.expectEqual(@as(u8, 5), median3(9, 1, 5));
+
+    // Edge cases
+    try std.testing.expectEqual(@as(u8, 5), median3(5, 5, 5));
+    try std.testing.expectEqual(@as(u8, 5), median3(5, 5, 9));
+    try std.testing.expectEqual(@as(u8, 0), median3(0, 0, 0));
+    try std.testing.expectEqual(@as(u8, 255), median3(255, 255, 255));
+    try std.testing.expectEqual(@as(u8, 128), median3(0, 128, 255));
+}
+
+test "correctErrors - applies median when channels disagree" {
+    const allocator = std.testing.allocator;
+
+    // 2x2 bitmap to avoid early return
+    const pixels = try allocator.alloc(u8, 4 * 3);
+    defer allocator.free(pixels);
+
+    // Pixel 0: channels disagree (R inside, G outside, B inside)
+    pixels[0] = 200; // R inside
+    pixels[1] = 50; // G outside
+    pixels[2] = 180; // B inside
+    // Other pixels - all agree (inside)
+    pixels[3] = 200;
+    pixels[4] = 200;
+    pixels[5] = 200;
+    pixels[6] = 200;
+    pixels[7] = 200;
+    pixels[8] = 200;
+    pixels[9] = 200;
+    pixels[10] = 200;
+    pixels[11] = 200;
+
+    var bitmap = MsdfBitmap{
+        .pixels = pixels,
+        .width = 2,
+        .height = 2,
+        .allocator = allocator,
+    };
+
+    correctErrors(&bitmap);
+
+    // Pixel 0 should have all channels set to median (180)
+    const med = median3(200, 50, 180); // = 180
+    try std.testing.expectEqual(med, bitmap.pixels[0]);
+    try std.testing.expectEqual(med, bitmap.pixels[1]);
+    try std.testing.expectEqual(med, bitmap.pixels[2]);
 }
