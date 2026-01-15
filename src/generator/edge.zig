@@ -223,6 +223,12 @@ pub const QuadraticSegment = struct {
     }
 };
 
+/// Result of finding inflection points in a bezier curve.
+pub const InflectionResult = struct {
+    points: [2]f64,
+    count: u8,
+};
+
 /// A cubic Bezier curve segment (two control points).
 /// Needed for OpenType CFF (PostScript) font support.
 pub const CubicSegment = struct {
@@ -388,6 +394,57 @@ pub const CubicSegment = struct {
 
         return result;
     }
+
+    /// Find inflection points of this cubic bezier curve.
+    /// Inflection points occur where the curvature changes sign (crosses zero).
+    /// Returns t values in (0, 1) where inflection occurs.
+    ///
+    /// The cross product B'(t) × B''(t) = 0 at inflection points.
+    /// This expands to a quadratic equation: At² + Bt + C = 0
+    pub fn findInflectionPoints(self: CubicSegment) InflectionResult {
+        // Compute coefficients for the inflection point equation
+        // e0 = p1 - p0
+        // e1 = p2 - 2*p1 + p0
+        // e2 = p3 - 3*p2 + 3*p1 - p0
+        //
+        // Cross product B'(t) × B''(t) = 18 * (e0×e1 + e0×e2*t + e1×e2*t²)
+
+        const e0 = self.p1.sub(self.p0);
+        const e1 = self.p2.sub(self.p1.scale(2)).add(self.p0);
+        const e2 = self.p3.sub(self.p2.scale(3)).add(self.p1.scale(3)).sub(self.p0);
+
+        // Quadratic coefficients (ignoring the constant 18 factor)
+        const a = e1.cross(e2); // coefficient of t²
+        const b = e0.cross(e2); // coefficient of t
+        const c = e0.cross(e1); // constant term
+
+        var result = InflectionResult{ .points = undefined, .count = 0 };
+
+        // Solve At² + Bt + C = 0
+        const roots = math.solveQuadratic(a, b, c);
+
+        // Filter roots to (0, 1) range - we only care about interior inflection points
+        for (roots.slice()) |t| {
+            if (t > 0.01 and t < 0.99) {
+                result.points[result.count] = t;
+                result.count += 1;
+            }
+        }
+
+        // Sort results
+        if (result.count == 2 and result.points[0] > result.points[1]) {
+            const tmp = result.points[0];
+            result.points[0] = result.points[1];
+            result.points[1] = tmp;
+        }
+
+        return result;
+    }
+
+    /// Check if this cubic curve has any inflection points in its interior.
+    pub fn hasInflectionPoints(self: CubicSegment) bool {
+        return self.findInflectionPoints().count > 0;
+    }
 };
 
 /// A tagged union representing any edge segment type.
@@ -465,6 +522,25 @@ pub const EdgeSegment = union(enum) {
             .linear => |s| s.p1,
             .quadratic => |s| s.p2,
             .cubic => |s| s.p3,
+        };
+    }
+
+    /// Find inflection points within this edge segment.
+    /// Only cubic beziers can have inflection points.
+    /// Returns t values in (0, 1) where inflection occurs.
+    pub fn findInflectionPoints(self: EdgeSegment) InflectionResult {
+        return switch (self) {
+            .cubic => |s| s.findInflectionPoints(),
+            // Linear and quadratic segments have no inflection points
+            .linear, .quadratic => InflectionResult{ .points = undefined, .count = 0 },
+        };
+    }
+
+    /// Check if this edge has any inflection points.
+    pub fn hasInflectionPoints(self: EdgeSegment) bool {
+        return switch (self) {
+            .cubic => |s| s.hasInflectionPoints(),
+            .linear, .quadratic => false,
         };
     }
 };
@@ -690,4 +766,104 @@ test "CubicSegment.bounds" {
     try std.testing.expectApproxEqAbs(@as(f64, 10), b.max.x, 1e-10);
     // Max y should be at the curve peak (around 7.5)
     try std.testing.expectApproxEqAbs(@as(f64, 7.5), b.max.y, 0.1);
+}
+
+test "CubicSegment.findInflectionPoints - S-curve has inflection" {
+    // An S-curve shape: starts going up-right, then curves down-right
+    // This should have one inflection point in the middle
+    const seg = CubicSegment.init(
+        Vec2.init(0, 0),
+        Vec2.init(0, 10), // Control pulls up
+        Vec2.init(10, -10), // Control pulls down
+        Vec2.init(10, 0),
+    );
+
+    const result = seg.findInflectionPoints();
+
+    // S-curve should have exactly one inflection point
+    try std.testing.expectEqual(@as(u8, 1), result.count);
+    // Inflection should be in the interior
+    try std.testing.expect(result.points[0] > 0.1);
+    try std.testing.expect(result.points[0] < 0.9);
+}
+
+test "CubicSegment.findInflectionPoints - no inflection for simple curve" {
+    // A simple curve that arcs in one direction - no inflection
+    const seg = CubicSegment.init(
+        Vec2.init(0, 0),
+        Vec2.init(3, 10),
+        Vec2.init(7, 10),
+        Vec2.init(10, 0),
+    );
+
+    const result = seg.findInflectionPoints();
+
+    // Simple arc should have no interior inflection points
+    try std.testing.expectEqual(@as(u8, 0), result.count);
+}
+
+test "CubicSegment.findInflectionPoints - line has no inflection" {
+    // Degenerate case: a straight line (all points collinear)
+    const seg = CubicSegment.init(
+        Vec2.init(0, 0),
+        Vec2.init(3, 3),
+        Vec2.init(7, 7),
+        Vec2.init(10, 10),
+    );
+
+    const result = seg.findInflectionPoints();
+    try std.testing.expectEqual(@as(u8, 0), result.count);
+}
+
+test "CubicSegment.hasInflectionPoints" {
+    // S-curve should have inflection
+    const s_curve = CubicSegment.init(
+        Vec2.init(0, 0),
+        Vec2.init(0, 10),
+        Vec2.init(10, -10),
+        Vec2.init(10, 0),
+    );
+    try std.testing.expect(s_curve.hasInflectionPoints());
+
+    // Simple arc should not
+    const arc = CubicSegment.init(
+        Vec2.init(0, 0),
+        Vec2.init(3, 10),
+        Vec2.init(7, 10),
+        Vec2.init(10, 0),
+    );
+    try std.testing.expect(!arc.hasInflectionPoints());
+}
+
+test "EdgeSegment.findInflectionPoints - cubic" {
+    const s_curve = CubicSegment.init(
+        Vec2.init(0, 0),
+        Vec2.init(0, 10),
+        Vec2.init(10, -10),
+        Vec2.init(10, 0),
+    );
+    const edge = EdgeSegment{ .cubic = s_curve };
+
+    const result = edge.findInflectionPoints();
+    try std.testing.expectEqual(@as(u8, 1), result.count);
+}
+
+test "EdgeSegment.findInflectionPoints - linear has none" {
+    const line = LinearSegment.init(Vec2.init(0, 0), Vec2.init(10, 10));
+    const edge = EdgeSegment{ .linear = line };
+
+    const result = edge.findInflectionPoints();
+    try std.testing.expectEqual(@as(u8, 0), result.count);
+}
+
+test "EdgeSegment.findInflectionPoints - quadratic has none" {
+    const quad = QuadraticSegment.init(
+        Vec2.init(0, 0),
+        Vec2.init(5, 10),
+        Vec2.init(10, 0),
+    );
+    const edge = EdgeSegment{ .quadratic = quad };
+
+    const result = edge.findInflectionPoints();
+    try std.testing.expectEqual(@as(u8, 0), result.count);
 }

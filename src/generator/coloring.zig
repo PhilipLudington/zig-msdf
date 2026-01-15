@@ -7,6 +7,10 @@
 //! The basic principle is that adjacent edges should not share all channels,
 //! and corners (sharp direction changes) should have different colors on
 //! each side to create a crisp intersection in the output.
+//!
+//! This implementation also detects inflection points in cubic bezier curves
+//! and treats them as color change boundaries, which is critical for proper
+//! rendering of S-curves and similar shapes.
 
 const std = @import("std");
 const math = @import("math.zig");
@@ -22,6 +26,23 @@ const Shape = contour_mod.Shape;
 /// Threshold angle (in radians) for detecting corners.
 /// Edges meeting at an angle greater than this are considered corners.
 const corner_angle_threshold = std.math.pi / 3.0; // 60 degrees
+
+/// Represents a point where color should change - either a corner between edges
+/// or an inflection point within an edge.
+const ColorBoundary = struct {
+    edge_index: usize,
+    /// If >= 0, this is an inflection point at parameter t within the edge.
+    /// If < 0, this is a corner at the start of the edge.
+    t_param: f64,
+
+    fn isCorner(self: ColorBoundary) bool {
+        return self.t_param < 0;
+    }
+
+    fn isInflection(self: ColorBoundary) bool {
+        return self.t_param >= 0;
+    }
+};
 
 /// Color edges in a shape for MSDF generation.
 /// This assigns colors to edges so that corners are preserved.
@@ -41,9 +62,16 @@ fn colorContour(contour: *Contour, angle_threshold: f64) void {
     const edge_count = contour.edges.len;
     if (edge_count == 0) return;
 
-    // Single edge contour: just use white (all channels)
+    // Single edge contour: check for inflection points
     if (edge_count == 1) {
-        contour.edges[0].setColor(.white);
+        const inflections = contour.edges[0].findInflectionPoints();
+        if (inflections.count > 0) {
+            // Single edge with inflection - use white but mark as having features
+            // In practice, this edge should be split, but for now we use white
+            contour.edges[0].setColor(.white);
+        } else {
+            contour.edges[0].setColor(.white);
+        }
         return;
     }
 
@@ -54,10 +82,9 @@ fn colorContour(contour: *Contour, angle_threshold: f64) void {
         return;
     }
 
-    // Find corners (sharp direction changes between edges)
-    // A corner is where the direction changes significantly
-    var corners_buffer: [256]usize = undefined;
-    var corners_len: usize = 0;
+    // Find all color boundaries: corners AND inflection points
+    var boundaries_buffer: [512]ColorBoundary = undefined;
+    var boundaries_len: usize = 0;
 
     for (0..edge_count) |i| {
         const prev_idx = if (i == 0) edge_count - 1 else i - 1;
@@ -72,18 +99,33 @@ fn colorContour(contour: *Contour, angle_threshold: f64) void {
         // Calculate angle between directions
         const angle = angleBetween(prev_dir, curr_dir);
 
+        // Check for corner
         if (angle > angle_threshold) {
-            if (corners_len < corners_buffer.len) {
-                corners_buffer[corners_len] = i;
-                corners_len += 1;
+            if (boundaries_len < boundaries_buffer.len) {
+                boundaries_buffer[boundaries_len] = .{
+                    .edge_index = i,
+                    .t_param = -1.0, // Negative indicates corner at edge start
+                };
+                boundaries_len += 1;
+            }
+        }
+
+        // Check for inflection points within current edge
+        const inflections = curr_edge.findInflectionPoints();
+        for (0..inflections.count) |j| {
+            if (boundaries_len < boundaries_buffer.len) {
+                boundaries_buffer[boundaries_len] = .{
+                    .edge_index = i,
+                    .t_param = inflections.points[j],
+                };
+                boundaries_len += 1;
             }
         }
     }
 
-    // If no corners detected, treat the whole contour as smooth
-    // Use simple alternating colors
-    if (corners_len == 0) {
-        // Smooth contour: use a pattern that ensures adjacent edges differ
+    // If no boundaries detected (no corners AND no inflection points),
+    // treat the whole contour as smooth - use simple alternating colors
+    if (boundaries_len == 0) {
         const colors = [_]EdgeColor{ .cyan, .magenta, .yellow };
         for (contour.edges, 0..) |*e, i| {
             e.setColor(colors[i % 3]);
@@ -91,9 +133,9 @@ fn colorContour(contour: *Contour, angle_threshold: f64) void {
         return;
     }
 
-    // Color edges between corners
-    // Each "smooth segment" between corners gets its own color scheme
-    colorBetweenCorners(contour, corners_buffer[0..corners_len]);
+    // Color edges based on boundaries
+    // Each segment between boundaries gets a different color
+    colorWithBoundaries(contour, boundaries_buffer[0..boundaries_len]);
 }
 
 /// Calculate the angle between two direction vectors (in radians).
@@ -111,54 +153,167 @@ fn angleBetween(a: Vec2, b: Vec2) f64 {
     return @abs(angle);
 }
 
-/// Color edges between identified corners.
-fn colorBetweenCorners(contour: *Contour, corners: []const usize) void {
+/// Color edges based on detected boundaries (corners and inflection points).
+/// This is the main coloring function that handles both types of boundaries.
+fn colorWithBoundaries(contour: *Contour, boundaries: []const ColorBoundary) void {
     const edge_count = contour.edges.len;
 
-    // Available colors for alternating
+    // Available colors for alternating - these are the primary MSDF colors
     const color_set = [_]EdgeColor{ .cyan, .magenta, .yellow };
 
-    // Process each segment between corners
-    var segment_color_idx: usize = 0;
+    // Sort boundaries by edge index, then by t parameter within edge
+    // We need a sorted copy to process in order
+    var sorted_boundaries: [512]ColorBoundary = undefined;
+    @memcpy(sorted_boundaries[0..boundaries.len], boundaries);
+    sortBoundaries(sorted_boundaries[0..boundaries.len]);
 
-    for (corners, 0..) |corner_start, corner_idx| {
-        const corner_end = if (corner_idx + 1 < corners.len)
-            corners[corner_idx + 1]
-        else
-            corners[0]; // Wrap around
+    // Track which color segment each edge belongs to
+    var edge_colors: [512]EdgeColor = undefined;
+    var segment_idx: usize = 0;
 
-        // Determine the color for this segment
-        const primary_color = color_set[segment_color_idx % color_set.len];
+    // Process boundaries in order
+    var boundary_idx: usize = 0;
+    var current_edge: usize = 0;
 
-        // Color all edges from corner_start to corner_end (exclusive)
-        var i = corner_start;
-        var edge_in_segment: usize = 0;
+    // Start with first color
+    var current_color = color_set[0];
 
-        while (true) {
-            // For segments with multiple edges, we might want to alternate
-            // within the segment, but using the same primary color ensures
-            // the corner on each side has different colors
-            contour.edges[i].setColor(getSegmentColor(primary_color, edge_in_segment));
-
-            edge_in_segment += 1;
-            i = (i + 1) % edge_count;
-
-            if (i == corner_end) break;
+    // Handle wrap-around: if first boundary is not at edge 0, start from beginning
+    if (boundaries.len > 0) {
+        const first = sorted_boundaries[0];
+        // Color edges before the first boundary
+        while (current_edge < first.edge_index) {
+            edge_colors[current_edge] = current_color;
+            current_edge += 1;
         }
 
-        // Move to next color for the next segment
-        segment_color_idx += 1;
+        // If first boundary is an inflection point (not at edge start), color that edge too
+        if (first.isInflection()) {
+            edge_colors[current_edge] = current_color;
+        }
+    }
+
+    // Process each boundary
+    while (boundary_idx < boundaries.len) {
+        const boundary = sorted_boundaries[boundary_idx];
+
+        // Change color at this boundary
+        segment_idx += 1;
+        current_color = color_set[segment_idx % color_set.len];
+
+        // Determine the edge range for this color segment
+        const next_boundary_idx = boundary_idx + 1;
+        const next_edge_start: usize = if (boundary.isCorner())
+            boundary.edge_index
+        else
+            boundary.edge_index; // Inflection points don't change the edge, just the color
+
+        var segment_end_edge: usize = undefined;
+        if (next_boundary_idx < boundaries.len) {
+            const next_boundary = sorted_boundaries[next_boundary_idx];
+            segment_end_edge = next_boundary.edge_index;
+            // If next boundary is an inflection, include that edge
+            if (next_boundary.isInflection()) {
+                segment_end_edge += 1;
+            }
+        } else {
+            // Wrap around to first boundary
+            const first = sorted_boundaries[0];
+            segment_end_edge = first.edge_index + edge_count;
+            if (first.isInflection()) {
+                segment_end_edge += 1;
+            }
+        }
+
+        // Color edges in this segment
+        var edge_idx = next_edge_start;
+        while (edge_idx < segment_end_edge) {
+            const actual_idx = edge_idx % edge_count;
+            edge_colors[actual_idx] = current_color;
+            edge_idx += 1;
+        }
+
+        boundary_idx += 1;
+    }
+
+    // Apply colors to edges
+    for (0..edge_count) |i| {
+        contour.edges[i].setColor(edge_colors[i]);
+    }
+
+    // Post-processing: ensure edges with inflection points use white
+    // This provides all channels for the inflection transition
+    for (0..edge_count) |i| {
+        if (contour.edges[i].hasInflectionPoints()) {
+            // Edges with inflection points should use white (all channels)
+            // to ensure proper distance field behavior at the inflection
+            contour.edges[i].setColor(.white);
+        }
+    }
+
+    // Ensure adjacent edges have different colors where needed
+    ensureColorDiversity(contour);
+}
+
+/// Sort boundaries by edge index, then by t parameter.
+fn sortBoundaries(boundaries: []ColorBoundary) void {
+    // Simple insertion sort (adequate for small arrays)
+    var i: usize = 1;
+    while (i < boundaries.len) : (i += 1) {
+        const key = boundaries[i];
+        var j: i32 = @intCast(i);
+        j -= 1;
+        while (j >= 0) : (j -= 1) {
+            const idx: usize = @intCast(j);
+            if (compareBoundaries(boundaries[idx], key)) {
+                break;
+            }
+            boundaries[idx + 1] = boundaries[idx];
+        }
+        const insert_idx: usize = @intCast(j + 1);
+        boundaries[insert_idx] = key;
     }
 }
 
-/// Get the color for an edge within a segment.
-/// This ensures adjacent edges within smooth segments still have some variation.
-fn getSegmentColor(primary: EdgeColor, index: usize) EdgeColor {
-    // For smooth segments, we could alternate slightly, but for now
-    // we keep it simple: use the primary color for all edges in the segment.
-    // The key is that adjacent segments (across corners) have different colors.
-    _ = index;
-    return primary;
+/// Compare two boundaries for sorting (returns true if a should come before b).
+fn compareBoundaries(a: ColorBoundary, b: ColorBoundary) bool {
+    if (a.edge_index != b.edge_index) {
+        return a.edge_index < b.edge_index;
+    }
+    // For same edge, corners (t < 0) come before inflection points
+    // Then sort by t parameter
+    if (a.t_param < 0 and b.t_param >= 0) return true;
+    if (a.t_param >= 0 and b.t_param < 0) return false;
+    return a.t_param < b.t_param;
+}
+
+/// Ensure color diversity: adjacent edges at corners should have different colors.
+fn ensureColorDiversity(contour: *Contour) void {
+    const edge_count = contour.edges.len;
+    if (edge_count < 2) return;
+
+    const color_set = [_]EdgeColor{ .cyan, .magenta, .yellow, .white };
+
+    // Check each pair of adjacent edges
+    for (0..edge_count) |i| {
+        const next_i = (i + 1) % edge_count;
+        const curr_color = contour.edges[i].getColor();
+        const next_color = contour.edges[next_i].getColor();
+
+        // If colors are the same and neither is white, try to fix
+        if (curr_color == next_color and curr_color != .white) {
+            // Find a different color for the next edge
+            for (color_set) |new_color| {
+                if (new_color != curr_color) {
+                    // Check if this edge has inflection points - if so, keep white
+                    if (!contour.edges[next_i].hasInflectionPoints()) {
+                        contour.edges[next_i].setColor(new_color);
+                    }
+                    break;
+                }
+            }
+        }
+    }
 }
 
 /// Detect if a junction between two edges forms a corner.
