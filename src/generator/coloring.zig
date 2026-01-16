@@ -31,27 +31,16 @@ const corner_angle_threshold = std.math.pi / 3.0; // 60 degrees
 /// This assigns colors to edges so that corners are preserved.
 /// First splits cubic edges at inflection points for proper S-curve handling.
 pub fn colorEdges(shape: *Shape, angle_threshold: f64) void {
-    // TEMPORARILY: Use white for all edges to test if coloring is the issue
-    // This makes it a regular SDF (all channels same) rather than MSDF
-    _ = angle_threshold;
-    for (shape.contours) |*contour| {
-        for (contour.edges) |*e| {
-            e.setColor(.white);
-        }
-    }
-    return;
-
-    // Original code below (disabled for testing)
     // Split edges at inflection points before coloring
     // This ensures S-curves and similar shapes get proper color boundaries
-    // shape.splitAtInflections() catch {
-    //     // If splitting fails (allocation error), continue with original edges
-    //     // The coloring will be suboptimal but still functional
-    // };
-    //
-    // for (shape.contours) |*contour| {
-    //     colorContour(contour, angle_threshold);
-    // }
+    shape.splitAtInflections() catch {
+        // If splitting fails (allocation error), continue with original edges
+        // The coloring will be suboptimal but still functional
+    };
+
+    for (shape.contours) |*contour| {
+        colorContour(contour, angle_threshold);
+    }
 }
 
 /// Color edges in a shape using the default angle threshold.
@@ -99,36 +88,12 @@ fn colorContour(contour: *Contour, angle_threshold: f64) void {
         const angle = angleBetween(prev_dir, curr_dir);
 
         // Check for corner (sharp direction change)
+        // Only direction changes are used as color boundaries - curvature reversals
+        // on smooth curves should NOT trigger color changes as that causes artifacts
         if (angle > angle_threshold) {
             if (corners_len < corners_buffer.len) {
                 corners_buffer[corners_len] = i;
                 corners_len += 1;
-            }
-        } else {
-            // Check for curvature sign reversal (smooth S-curve)
-            // This handles TrueType fonts where S-curves are made of multiple
-            // quadratic beziers that smoothly connect but change curvature direction
-            //
-            // Important: Linear edges have 0 curvature, so we need to look past them
-            // to find the actual curved edges and compare their curvatures
-            const prev_curv = findPreviousCurvature(contour.edges, i);
-            const curr_curv = findCurrentCurvature(contour.edges, i);
-
-            // Curvature sign reversal: one is positive, the other is negative
-            // Use a small relative threshold to avoid noise from near-linear segments
-            const min_curv = @min(@abs(prev_curv), @abs(curr_curv));
-            const max_curv = @max(@abs(prev_curv), @abs(curr_curv));
-
-            // Only consider it a reversal if both have meaningful curvature
-            // (not near-linear segments) and they have opposite signs
-            const has_meaningful_curvature = max_curv > 0 and min_curv > max_curv * 0.01;
-            const opposite_signs = (prev_curv > 0 and curr_curv < 0) or (prev_curv < 0 and curr_curv > 0);
-
-            if (has_meaningful_curvature and opposite_signs) {
-                if (corners_len < corners_buffer.len) {
-                    corners_buffer[corners_len] = i;
-                    corners_len += 1;
-                }
             }
         }
     }

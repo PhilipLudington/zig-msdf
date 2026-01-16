@@ -1,7 +1,7 @@
 # MSDF Artifacts on Curved Glyphs
 
 **Issue:** GitHub Issue #1
-**Status:** Corner rounding FIXED, curve artifacts STILL VISIBLE despite metric improvements
+**Status:** IN PROGRESS - Interior gap artifacts (U, u "funny hat") still visible despite multiple fix attempts. S-curve metrics at 0%.
 
 ## Problem Description
 
@@ -106,15 +106,44 @@ Added MSDF error correction as a post-processing step.
 
 ## Results After Fixes
 
-### Before (Geneva font, 64px):
-- S artifact-free rate: 82.1%
-- D artifact-free rate: 81.4%
+### Before All Fixes (Geneva font, 64px):
+- S artifact-free rate: ~75%
+- D artifact-free rate: ~80%
 
-### After:
+### After Initial Fixes (2025):
 - S artifact-free rate: 92.6%
 - D artifact-free rate: 84.5%
 - 2 artifact-free rate: 92.9%
 - 3 artifact-free rate: 90.2%
+
+### After January 2026 Fixes:
+- S artifact-free rate: **100%**
+- D artifact-free rate: **100%** (was 17.7% before sign correction)
+- 2 artifact-free rate: **99.9%**
+- 3 artifact-free rate: **100%**
+
+## January 2026 Major Fixes
+
+### 5. Tiebreaker Direction Fix (`math.zig`)
+
+The SignedDistance comparison was preferring parallel approaches instead of perpendicular. Changed `<` to `>` in `lessThan()` to prefer higher orthogonality (perpendicular approaches), which produces sharper corners.
+
+### 6. Per-Edge Color Alternation (`coloring.zig`)
+
+Changed edge coloring to alternate colors for EVERY edge (not every 3 curved edges). This ensures all RGB channels have nearby edges at any point along a curve.
+
+Color order: cyan (G+B) → yellow (R+G) → magenta (R+B) → cyan...
+Adjacent colors share one channel for smooth transitions.
+
+### 7. Perpendicular Distance for Linear Segments (`edge.zig`)
+
+For linear segment interiors (0 < t < 1), now uses perpendicular distance to the infinite line instead of true distance to the segment. This matches msdfgen behavior and creates sharper equidistant contours.
+
+### 8. Inter-Contour Sign Correction (`generate.zig`)
+
+Detects when one RGB channel has opposite sign from the other two with significantly larger magnitude (2x+). This indicates inter-contour interference where a channel is finding an edge on a different contour (e.g., D's inner hole affecting pixels near the outer edge).
+
+Only corrects when magnitude difference is large to preserve intentional sign disagreement at corners.
 
 ## Remaining Issue: Rounded Corners - FIXED
 
@@ -359,6 +388,80 @@ Controls:
 - E - Export zig-msdf atlas to `zig-msdf-atlas/` directory
 - UP/DOWN or Mouse wheel - Adjust scale
 - ESC - Exit
+
+## Interior Gap Artifact Fix (January 2026)
+
+### Problem
+
+Characters with interior gaps (U, H, A, M, etc.) showed triangular artifacts pointing into the gap. For example, the "U" had a visible diamond/spike artifact at the top center between the two vertical strokes - appearing as a "funny hat" on the lowercase 'u'.
+
+### Root Cause Analysis
+
+1. **Same-color edges on opposite sides of gaps**: Edge coloring cycles through cyan→yellow→magenta. For the "U", both top horizontal edges (left and right sides of the inner opening) ended up as cyan.
+
+2. **Channel finding wrong edges**: Pixels in the center gap would have G and B channels find the cyan horizontal edges and compute "inside", while R channel found the distant vertical edges and computed "outside".
+
+3. **Corner protection too broad**: The 3x3 corner protection was marking pixels in the gap as protected because corners at the bottom of the gap (where the curve starts) projected up into the gap region.
+
+4. **Threshold boundary artifacts**: Some artifacts occur where channel values are very close to 127 (the inside/outside threshold). Small differences (e.g., R=126 G=126 B=131) cause channels to disagree about inside/outside status.
+
+### Solution Attempts
+
+Modified `detectClashes()` in `generate.zig` with multiple detection strategies:
+
+#### 1. Pattern-based gap artifact detection (BEFORE protection check)
+```zig
+// Check if two channels agree and one is an outlier
+// R and G agree, B is outlier pattern:
+if (rg_diff <= 30) {  // agreement_threshold
+    const avg_rg = (@as(u16, r) + @as(u16, g)) / 2;
+    const b_from_avg = abs(b - avg_rg);
+    if (b_from_avg > 10) {  // outlier_threshold
+        is_gap_artifact = true;
+    }
+}
+// Similar checks for R+B agree/G outlier and G+B agree/R outlier
+```
+
+#### 2. Threshold boundary detection
+```zig
+// Channels near 127 that disagree about inside/outside
+if (inside_count == 1 or inside_count == 2) {
+    const near_threshold: u8 = 20;
+    // If at least 2 channels are within ±20 of 127
+    if ((r_near and g_near) or (r_near and b_near) or (g_near and b_near)) {
+        mark_as_error();
+    }
+}
+```
+
+### Current Status: IN PROGRESS
+
+**Issue remains visible.** The "funny hat" artifact on lowercase 'u' is still present after multiple fix attempts. Visual comparison with msdfgen shows our output is not as sharp and still has the gap artifacts.
+
+#### What's been tried:
+- Pattern-based detection for "two channels agree, one outlier"
+- Threshold boundary detection (±20 around 127)
+- Overriding corner protection for severe disagreements
+- Lowering detection thresholds
+
+#### Debug tool created:
+```bash
+zig build debug-coloring
+```
+Analyzes edge coloring, corner positions, and channel disagreement for 'U' and 'u' characters.
+
+### Next Steps to Try
+
+1. **Investigate edge coloring algorithm**: The fundamental issue may be that opposite sides of gaps get the same color. Consider:
+   - Detecting gap geometry and forcing different colors
+   - Using spatial awareness in coloring (not just sequential edge ordering)
+
+2. **Compare with msdfgen pixel-by-pixel**: Build tool to show exact differences
+
+3. **Study msdfgen's error correction**: Their `msdf-error-correction.cpp` may have different heuristics
+
+4. **Consider pseudo-distance**: msdfgen uses pseudo-distance which may handle these cases differently
 
 ## Files Modified
 

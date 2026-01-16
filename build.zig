@@ -278,4 +278,23 @@ pub fn build(b: *std.Build) void {
     run_artifact_diag.step.dependOn(b.getInstallStep());
     const artifact_diag_step = b.step("artifact-diag", "Run artifact diagnostic tool");
     artifact_diag_step.dependOn(&run_artifact_diag.step);
+
+    // Debug coloring tool
+    const debug_coloring_exe = b.addExecutable(.{
+        .name = "debug_coloring",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_coloring.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_coloring_exe);
+
+    const run_debug_coloring = b.addRunArtifact(debug_coloring_exe);
+    run_debug_coloring.step.dependOn(b.getInstallStep());
+    const debug_coloring_step = b.step("debug-coloring", "Debug edge coloring for glyphs");
+    debug_coloring_step.dependOn(&run_debug_coloring.step);
 }
