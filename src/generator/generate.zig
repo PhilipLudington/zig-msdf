@@ -150,20 +150,23 @@ fn countEdgeCrossings(e: EdgeSegment, point: Vec2) i32 {
 }
 
 /// Convert a signed distance value to a pixel value (0-255).
-/// The mapping is: distance = -range -> 255, distance = 0 -> 128, distance = +range -> 0
+/// The mapping is: distance = -range/2 -> 255, distance = 0 -> 128, distance = +range/2 -> 0
+/// Values beyond ±range/2 are clamped. This matches msdfgen's convention where the full
+/// transition from 0 to 1 happens over a distance span equal to the range parameter.
 pub fn distanceToPixel(distance: f64, range: f64) u8 {
-    // Normalize distance to [-1, 1] range, then map to [0, 1]
     // Inside (negative distance) maps to higher values (brighter)
     // Outside (positive distance) maps to lower values (darker)
-    const normalized = 0.5 - distance / (2.0 * range);
+    // Full transition happens over ±range/2, matching msdfgen behavior
+    const normalized = 0.5 - distance / range;
     const clamped = std.math.clamp(normalized, 0.0, 1.0);
     return @intFromFloat(clamped * 255.0);
 }
 
 /// Convert a pixel value back to a signed distance.
+/// This is the inverse of distanceToPixel.
 pub fn pixelToDistance(pixel: u8, range: f64) f64 {
     const normalized = @as(f64, @floatFromInt(pixel)) / 255.0;
-    return (0.5 - normalized) * 2.0 * range;
+    return (0.5 - normalized) * range;
 }
 
 /// Generate a Multi-channel Signed Distance Field from a shape.

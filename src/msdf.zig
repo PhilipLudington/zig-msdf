@@ -47,6 +47,9 @@ pub const GenerateOptions = struct {
     padding: u32 = 4,
     /// Distance field range in pixels.
     range: f64 = 4.0,
+    /// Apply error correction to fix artifacts on curves.
+    /// Disabled by default as it can round sharp corners.
+    error_correction: bool = false,
 };
 
 /// Options for generating a font atlas.
@@ -59,6 +62,9 @@ pub const AtlasOptions = struct {
     padding: u32 = 4,
     /// Distance field range in pixels.
     range: f64 = 4.0,
+    /// Apply error correction to fix artifacts on curves.
+    /// Disabled by default as it can round sharp corners.
+    error_correction: bool = false,
 };
 
 /// Metrics for a rendered glyph.
@@ -256,10 +262,11 @@ pub fn generateGlyph(
         transform,
     ) catch return MsdfError.OutOfMemory;
 
-    // Apply error correction with corner protection
-    // Pass shape and transform so corners are protected from flattening
-    var bitmap_mut = bitmap;
-    generate.correctErrorsWithProtection(&bitmap_mut, shape, transform);
+    // Apply error correction if enabled
+    if (options.error_correction) {
+        var bitmap_mut = bitmap;
+        generate.correctErrorsWithProtection(&bitmap_mut, shape, transform);
+    }
 
     // Calculate metrics (normalized to font units, caller can scale as needed)
     const metrics = GlyphMetrics{

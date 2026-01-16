@@ -1,7 +1,10 @@
 # MSDF Artifacts on Curved Glyphs
 
 **Issue:** GitHub Issue #1
-**Status:** FIXED - U hat artifact resolved. Three bugs fixed: (1) re-enabled error correction, (2) Y-flip in corner protection, (3) degenerate segment division by zero. All tests pass.
+**Status:** FIXED - Output now matches msdfgen closely. Key fixes:
+1. Distance-to-pixel formula: removed factor of 2 to match msdfgen's gradient steepness
+2. Error correction: now disabled by default (configurable) as it was rounding corners
+3. Previous fixes: Y-flip in corner protection, degenerate segment handling
 
 ## Problem Description
 

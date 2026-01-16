@@ -341,8 +341,9 @@ test "Continuity: adjacent pixels have bounded difference" {
 
     // Maximum discontinuity should be bounded
     // For a proper SDF, adjacent pixels shouldn't differ by more than ~1 distance unit
-    // In pixel values, this corresponds to roughly 255 / (2 * range) per pixel of distance
-    const max_expected_jump = 255.0 / (2.0 * range) * 2.0; // Allow 2 pixels of distance change
+    // In pixel values, this corresponds to roughly 255 / range per pixel of distance
+    // (The full transition happens over ±range/2, matching msdfgen behavior)
+    const max_expected_jump = 255.0 / range * 2.0; // Allow 2 pixels of distance change
     try std.testing.expect(stats.max_discontinuity < max_expected_jump);
 
     // Mean discontinuity should be low
