@@ -237,6 +237,14 @@ pub fn generateMsdf(
 
 /// Compute the minimum signed distance for each color channel.
 /// Returns [red_distance, green_distance, blue_distance].
+///
+/// This function implements MSDF pseudo-distance calculation:
+/// 1. Find the closest edge for each color channel
+/// 2. Track both the distance AND the parameter t where the closest point lies
+/// 3. Convert true distance to pseudo-distance using distanceToPseudoDistance
+///
+/// Pseudo-distance is crucial for smooth corners - it extends edge tangent lines
+/// beyond endpoints so different colored edges at a corner give different distances.
 fn computeChannelDistances(shape: Shape, point: Vec2) [3]f64 {
     var min_red = SignedDistance.infinite;
     var min_green = SignedDistance.infinite;
@@ -267,11 +275,14 @@ fn computeChannelDistances(shape: Shape, point: Vec2) [3]f64 {
         }
     }
 
-    return .{
-        min_red.distance,
-        min_green.distance,
-        min_blue.distance,
-    };
+    // Negate distances to match MSDF convention:
+    // Our edge sign calculation produces inverted results compared to msdfgen.
+    // Rather than changing all segment types, we negate here.
+    const r = -min_red.distance;
+    const g = -min_green.distance;
+    const b = -min_blue.distance;
+
+    return .{ r, g, b };
 }
 
 /// Stencil flags for error correction.

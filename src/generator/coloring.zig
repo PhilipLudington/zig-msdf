@@ -31,16 +31,27 @@ const corner_angle_threshold = std.math.pi / 3.0; // 60 degrees
 /// This assigns colors to edges so that corners are preserved.
 /// First splits cubic edges at inflection points for proper S-curve handling.
 pub fn colorEdges(shape: *Shape, angle_threshold: f64) void {
+    // TEMPORARILY: Use white for all edges to test if coloring is the issue
+    // This makes it a regular SDF (all channels same) rather than MSDF
+    _ = angle_threshold;
+    for (shape.contours) |*contour| {
+        for (contour.edges) |*e| {
+            e.setColor(.white);
+        }
+    }
+    return;
+
+    // Original code below (disabled for testing)
     // Split edges at inflection points before coloring
     // This ensures S-curves and similar shapes get proper color boundaries
-    shape.splitAtInflections() catch {
-        // If splitting fails (allocation error), continue with original edges
-        // The coloring will be suboptimal but still functional
-    };
-
-    for (shape.contours) |*contour| {
-        colorContour(contour, angle_threshold);
-    }
+    // shape.splitAtInflections() catch {
+    //     // If splitting fails (allocation error), continue with original edges
+    //     // The coloring will be suboptimal but still functional
+    // };
+    //
+    // for (shape.contours) |*contour| {
+    //     colorContour(contour, angle_threshold);
+    // }
 }
 
 /// Color edges in a shape using the default angle threshold.
@@ -122,7 +133,8 @@ fn colorContour(contour: *Contour, angle_threshold: f64) void {
         }
     }
 
-    // If no corners or curvature changes detected, use simple alternating colors
+    // If no corners or curvature changes detected, use alternating colors
+    // to ensure all channels have nearby edges
     if (corners_len == 0) {
         const colors = [_]EdgeColor{ .cyan, .magenta, .yellow };
         for (contour.edges, 0..) |*e, i| {
@@ -197,20 +209,19 @@ fn angleBetween(a: Vec2, b: Vec2) f64 {
 }
 
 /// Color edges between identified corners.
-/// For long curved segments, alternates colors every few edges to prevent
-/// self-interference artifacts when opposite sides of a curve are too close.
+/// Each edge gets a different color to ensure all three RGB channels
+/// have nearby edges at any point along the curve.
 fn colorBetweenCorners(contour: *Contour, corners: []const usize) void {
     const edge_count = contour.edges.len;
 
-    // Available colors for alternating
-    const color_set = [_]EdgeColor{ .cyan, .magenta, .yellow };
+    // Available colors for alternating - ordered so adjacent colors share one channel:
+    // cyan (G+B) → yellow (R+G) → magenta (R+B) → cyan...
+    // This ensures smooth channel transitions along the curve.
+    const color_set = [_]EdgeColor{ .cyan, .yellow, .magenta };
 
-    // Maximum consecutive curved edges with the same color before switching.
-    // This prevents self-interference when curves loop back on themselves.
-    const max_same_color_curves = 3;
-
-    // Process each segment between corners
-    var segment_color_idx: usize = 0;
+    // Track cumulative edge count to ensure consecutive edges always
+    // have different colors, even across section boundaries
+    var cumulative_edge_idx: usize = 0;
 
     for (corners, 0..) |corner_start, corner_idx| {
         const corner_end = if (corner_idx + 1 < corners.len)
@@ -218,48 +229,21 @@ fn colorBetweenCorners(contour: *Contour, corners: []const usize) void {
         else
             corners[0]; // Wrap around
 
-        // Count edges in this segment
-        var segment_len: usize = 0;
-        var idx = corner_start;
-        while (true) {
-            segment_len += 1;
-            idx = (idx + 1) % edge_count;
-            if (idx == corner_end) break;
-        }
-
         // Color edges in this segment
-        // For long segments, alternate colors every few curved edges
         var i = corner_start;
-        var curved_count: usize = 0;
-        var current_color_idx = segment_color_idx;
 
         while (true) {
             const edge = &contour.edges[i];
-            const color = color_set[current_color_idx % color_set.len];
+
+            // Assign color based on cumulative position in contour
+            // This ensures every consecutive edge gets a different color
+            const color = color_set[cumulative_edge_idx % color_set.len];
             edge.setColor(color);
 
-            // Track curved edges and switch colors periodically for long curves
-            const is_curved = switch (edge.*) {
-                .quadratic, .cubic => true,
-                .linear => false,
-            };
-
-            if (is_curved) {
-                curved_count += 1;
-                // Switch color after max_same_color_curves curved edges
-                // This ensures color diversity along long curves
-                if (curved_count >= max_same_color_curves) {
-                    curved_count = 0;
-                    current_color_idx += 1;
-                }
-            }
-
+            cumulative_edge_idx += 1;
             i = (i + 1) % edge_count;
             if (i == corner_end) break;
         }
-
-        // Move to next base color for the next segment
-        segment_color_idx += 1;
     }
 }
 

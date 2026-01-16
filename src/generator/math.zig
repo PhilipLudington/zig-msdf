@@ -95,19 +95,41 @@ pub const Vec2 = struct {
     }
 };
 
+/// Result of a distance calculation, containing both the signed distance
+/// and the parameter t along the edge where the closest point was found.
+/// Used for pseudo-distance conversion in MSDF generation.
+pub const DistanceResult = struct {
+    /// The signed distance to the edge.
+    distance: SignedDistance,
+    /// The parameter t in [0,1] (or outside) where the closest point lies.
+    /// Values < 0 mean closest point is before segment start.
+    /// Values > 1 mean closest point is after segment end.
+    param: f64,
+
+    pub const infinite = DistanceResult{
+        .distance = SignedDistance.infinite,
+        .param = 0,
+    };
+
+    /// Create a new DistanceResult.
+    pub fn init(dist: SignedDistance, param: f64) DistanceResult {
+        return .{ .distance = dist, .param = param };
+    }
+};
+
 /// Represents a signed distance with additional orthogonality information.
 /// Used for comparing distances in MSDF generation.
 pub const SignedDistance = struct {
     /// The signed distance value (negative = inside, positive = outside).
     distance: f64,
-    /// Dot product with edge direction (0 = perpendicular, 1 = parallel).
-    /// Used as a tiebreaker when distances are equal. Lower = more perpendicular = preferred.
-    /// This matches msdfgen's SignedDistance.dot member.
+    /// Cross product magnitude of normalized direction and distance vectors.
+    /// 0 = parallel/grazing approach, 1 = perpendicular/direct approach.
+    /// Used as a tiebreaker when distances are equal. Higher = more perpendicular = preferred.
     orthogonality: f64,
 
     pub const infinite = SignedDistance{
         .distance = std.math.inf(f64),
-        .orthogonality = 1, // Parallel = worst case for tiebreaker
+        .orthogonality = 0, // Parallel = worst case for tiebreaker
     };
 
     /// Create a new SignedDistance.
@@ -117,12 +139,18 @@ pub const SignedDistance = struct {
 
     /// Compare two signed distances for MSDF purposes.
     /// Returns true if `self` should be preferred over `other`.
-    /// Matches msdfgen: prefer closer distance, then lower orthogonality (dot).
+    /// Prefer closer distance, then lower orthogonality (more perpendicular approach).
+    ///
+    /// The orthogonality value is |dot(edge_dir, approach_dir)|:
+    /// - 0 = perpendicular approach (best, like interior points)
+    /// - 1 = parallel/glancing approach (worst)
+    ///
+    /// This matches msdfgen's SignedDistance::operator< which prefers lower dot values.
     pub fn lessThan(self: SignedDistance, other: SignedDistance) bool {
         const abs_self = @abs(self.distance);
         const abs_other = @abs(other.distance);
-        // Prefer the closer distance, or if equal, the lower orthogonality
-        // (lower dot = more perpendicular approach = sharper corners)
+        // Prefer the closer distance, or if equal, the LOWER orthogonality
+        // (lower = more perpendicular approach = sharper corners)
         if (abs_self != abs_other) {
             return abs_self < abs_other;
         }
@@ -455,11 +483,13 @@ test "SignedDistance.lessThan" {
     try std.testing.expect(near.lessThan(far));
     try std.testing.expect(!far.lessThan(near));
 
-    // Equal distance: prefer lower orthogonality (more perpendicular approach)
-    // This matches msdfgen where lower dot = more perpendicular = sharper corners
+    // Equal distance: prefer LOWER orthogonality (more perpendicular approach)
+    // Lower value = more perpendicular = sharper corners
+    // (orthogonality is |dot(edge_dir, approach_dir)|: 0 = perpendicular, 1 = parallel)
     const low_ortho = SignedDistance.init(1.0, 0.3);
     const high_ortho = SignedDistance.init(1.0, 0.7);
     try std.testing.expect(low_ortho.lessThan(high_ortho));
+    try std.testing.expect(!high_ortho.lessThan(low_ortho));
 }
 
 test "Bounds.include" {

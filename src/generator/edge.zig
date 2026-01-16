@@ -7,6 +7,7 @@ const std = @import("std");
 const math = @import("math.zig");
 const Vec2 = math.Vec2;
 const SignedDistance = math.SignedDistance;
+const DistanceResult = math.DistanceResult;
 const Bounds = math.Bounds;
 
 /// Edge colors used in multi-channel signed distance field generation.
@@ -58,28 +59,52 @@ pub const LinearSegment = struct {
     }
 
     /// Compute the signed distance from a point to this segment.
+    /// For interior points (0 < t < 1), uses perpendicular distance to the infinite
+    /// line, matching msdfgen behavior. For endpoint regions, uses true distance.
     pub fn signedDistance(self: LinearSegment, origin: Vec2) SignedDistance {
-        const dir = self.p1.sub(self.p0);
-        const aq = origin.sub(self.p0);
+        return self.signedDistanceWithParam(origin).distance;
+    }
 
-        // Project point onto line, clamped to segment
-        const t = std.math.clamp(aq.dot(dir) / dir.lengthSquared(), 0.0, 1.0);
+    /// Compute the signed distance and closest parameter from a point to this segment.
+    /// Returns both the distance and the parameter t where the closest point lies.
+    /// The parameter may be outside [0,1] for points beyond the segment endpoints.
+    ///
+    /// This implementation matches msdfgen's LinearSegment::signedDistance exactly.
+    pub fn signedDistanceWithParam(self: LinearSegment, origin: Vec2) DistanceResult {
+        const aq = origin.sub(self.p0); // origin - p0
+        const ab = self.p1.sub(self.p0); // direction vector
+        const ab_len_sq = ab.lengthSquared();
 
-        // Vector from closest point on segment to origin
-        const closest = self.p0.add(dir.scale(t));
-        const d = origin.sub(closest);
+        // Project point onto line (unclamped parameter)
+        const param = aq.dot(ab) / ab_len_sq;
 
-        // Distance magnitude
-        const dist = d.length();
+        // eq = closer endpoint - origin (used for endpoint distance and sign)
+        const endpoint = if (param > 0.5) self.p1 else self.p0;
+        const eq = endpoint.sub(origin);
+        const endpoint_distance = eq.length();
 
-        // Determine sign using cross product (inside/outside)
-        // Convention matches msdfgen: cross < 0 means inside → negative distance
-        const sign: f64 = if (dir.cross(aq) < 0) -1.0 else 1.0;
+        // For interior points, check if perpendicular distance is closer
+        if (param > 0.0 and param < 1.0) {
+            // orthoDistance = dot(ab.getOrthonormal(false), aq)
+            // getOrthonormal(false) of (x,y) = (y,-x)/len, so dot with aq gives:
+            // (ab.y * aq.x - ab.x * aq.y) / |ab| = cross(aq, ab) / |ab|
+            const ortho_distance = aq.cross(ab) / @sqrt(ab_len_sq);
 
-        // Orthogonality: how perpendicular is the distance vector to the edge
-        const ortho = if (dist == 0) 0.0 else @abs(dir.normalize().cross(d.normalize()));
+            // msdfgen: only use orthoDistance if |orthoDistance| < endpointDistance
+            if (@abs(ortho_distance) < endpoint_distance) {
+                return DistanceResult.init(SignedDistance.init(ortho_distance, 0.0), param);
+            }
+        }
 
-        return SignedDistance.init(sign * dist, ortho);
+        // For endpoint regions, or when perpendicular distance is farther
+        // sign = nonZeroSign(crossProduct(ab, eq))
+        const cross_val = ab.cross(eq);
+        const sign: f64 = if (cross_val >= 0) 1.0 else -1.0;
+
+        // Orthogonality = |dot(ab.normalize(), eq.normalize())|
+        const ortho = if (endpoint_distance == 0) 0.0 else @abs(ab.normalize().dot(eq.normalize()));
+
+        return DistanceResult.init(SignedDistance.init(sign * endpoint_distance, ortho), param);
     }
 
     /// Get the bounding box of this segment.
@@ -132,6 +157,11 @@ pub const QuadraticSegment = struct {
 
     /// Compute the signed distance from a point to this segment.
     pub fn signedDistance(self: QuadraticSegment, origin: Vec2) SignedDistance {
+        return self.signedDistanceWithParam(origin).distance;
+    }
+
+    /// Compute the signed distance and closest parameter from a point to this segment.
+    pub fn signedDistanceWithParam(self: QuadraticSegment, origin: Vec2) DistanceResult {
         // Transform to coefficient form for distance calculation
         // Q(t) = (1-t)²P0 + 2(1-t)tP1 + t²P2
         // Q(t) = P0 - 2P0t + P0t² + 2P1t - 2P1t² + P2t²
@@ -147,58 +177,85 @@ pub const QuadraticSegment = struct {
         const pa = qa.sub(origin);
 
         // Coefficients of the derivative polynomial (cubic)
-        // d/dt |Q(t) - origin|² = 2(Q(t) - origin) · Q'(t)
-        // This expands to at³ + bt² + ct + d = 0
+        // d/dt |Q(t) - origin|² = 2(Q(t) - origin) · Q'(t) = 0
+        // Expanding (pa + qb*t + qc*t²) · (qb + 2*qc*t) = 0 gives:
+        // pa·qb + (2*pa·qc + qb·qb)*t + 3*qb·qc*t² + 2*qc·qc*t³ = 0
+        // This is: at³ + bt² + ct + d = 0
 
-        const a = qc.dot(qc);
+        const a = 2.0 * qc.dot(qc);
         const b = 3.0 * qb.dot(qc);
-        const c = 2.0 * qb.dot(qb) + 2.0 * pa.dot(qc);
-        const d = 2.0 * pa.dot(qb);
+        const c = qb.dot(qb) + 2.0 * pa.dot(qc);
+        const d = pa.dot(qb);
 
         // Solve for critical points
         const roots = math.solveCubic(a, b, c, d);
 
         // Find minimum distance among critical points and endpoints
         var min_dist = SignedDistance.infinite;
+        var best_t: f64 = 0.0;
 
         // Check endpoints
-        min_dist = checkDistance(self, 0.0, origin, min_dist);
-        min_dist = checkDistance(self, 1.0, origin, min_dist);
+        const check0 = checkDistanceQuad(self, 0.0, origin);
+        if (check0.distance.lessThan(min_dist)) {
+            min_dist = check0.distance;
+            best_t = 0.0;
+        }
+
+        const check1 = checkDistanceQuad(self, 1.0, origin);
+        if (check1.distance.lessThan(min_dist)) {
+            min_dist = check1.distance;
+            best_t = 1.0;
+        }
 
         // Check interior critical points
         for (roots.slice()) |t| {
             if (t > 0.0 and t < 1.0) {
-                min_dist = checkDistance(self, t, origin, min_dist);
+                const check = checkDistanceQuad(self, t, origin);
+                if (check.distance.lessThan(min_dist)) {
+                    min_dist = check.distance;
+                    best_t = t;
+                }
             }
         }
 
-        return min_dist;
+        return DistanceResult.init(min_dist, best_t);
     }
 
-    fn checkDistance(self: QuadraticSegment, t: f64, origin: Vec2, current_min: SignedDistance) SignedDistance {
+    fn checkDistanceQuad(self: QuadraticSegment, t: f64, origin: Vec2) struct { distance: SignedDistance } {
         const p = self.point(t);
-        const d = origin.sub(p);
-        const dist = d.length();
+        const qp = p.sub(origin); // point - origin
+        const dist = qp.length();
 
-        // For sign determination at endpoints, use slightly interior tangent
-        // This prevents sign flipping due to tangent discontinuities at segment junctions
-        const tangent_t = if (t <= 0.0) 0.01 else if (t >= 1.0) 0.99 else t;
-        const tangent = self.direction(tangent_t);
+        // Determine sign using cross product - matches msdfgen exactly
+        // msdfgen uses different vectors for endpoints vs interior:
+        // - t=0: cross(p1-p0, p0-origin)
+        // - t=1: cross(p2-p1, p2-origin)
+        // - interior: cross(direction(t), point(t)-origin)
+        const cross_val = if (t <= 0.0) blk: {
+            // Start point: use first control leg
+            const ab = self.p1.sub(self.p0);
+            const qa = self.p0.sub(origin);
+            break :blk ab.cross(qa);
+        } else if (t >= 1.0) blk: {
+            // End point: use second control leg
+            const bc = self.p2.sub(self.p1);
+            const qc = self.p2.sub(origin);
+            break :blk bc.cross(qc);
+        } else blk: {
+            // Interior: use actual tangent
+            const tangent = self.direction(t);
+            break :blk tangent.cross(qp);
+        };
 
-        // Determine sign using cross product with tangent
-        // Convention matches msdfgen: cross < 0 means inside → negative distance
-        const sign: f64 = if (tangent.cross(d) < 0) -1.0 else 1.0;
+        const sign: f64 = if (cross_val >= 0) 1.0 else -1.0;
 
-        // Orthogonality - use actual tangent at t for comparison purposes
-        const actual_tangent = self.direction(t);
-        const ortho = if (dist == 0) 0.0 else @abs(actual_tangent.normalize().cross(d.normalize()));
+        // Orthogonality = |dot(tangent, approach_dir)|
+        // 0 = perpendicular (best), 1 = parallel (worst)
+        // This matches msdfgen's convention
+        const tangent = self.direction(t);
+        const ortho = if (dist == 0) 0.0 else @abs(tangent.normalize().dot(qp.normalize()));
 
-        const candidate = SignedDistance.init(sign * dist, ortho);
-
-        if (candidate.lessThan(current_min)) {
-            return candidate;
-        }
-        return current_min;
+        return .{ .distance = SignedDistance.init(sign * dist, ortho) };
     }
 
     /// Get the curvature sign of this quadratic bezier.
@@ -294,6 +351,11 @@ pub const CubicSegment = struct {
     /// Compute the signed distance from a point to this segment.
     /// Uses iterative refinement for cubic curves.
     pub fn signedDistance(self: CubicSegment, origin: Vec2) SignedDistance {
+        return self.signedDistanceWithParam(origin).distance;
+    }
+
+    /// Compute the signed distance and closest parameter from a point to this segment.
+    pub fn signedDistanceWithParam(self: CubicSegment, origin: Vec2) DistanceResult {
         // For cubic curves, the distance minimization leads to a quintic equation.
         // We use a combination of subdivision and Newton iteration for robustness.
 
@@ -354,17 +416,38 @@ pub const CubicSegment = struct {
 
         // Compute final signed distance
         const closest = self.point(best_t);
-        const d = origin.sub(closest);
+        const qp = closest.sub(origin); // point - origin
         const dist = @sqrt(best_dist_sq);
 
-        // Determine sign using cross product with tangent
-        // Convention matches msdfgen: cross < 0 means inside → negative distance
+        // Determine sign using cross product - matches msdfgen exactly
+        // msdfgen uses different vectors for endpoints vs interior:
+        // - t=0: cross(p1-p0, p0-origin)
+        // - t=1: cross(p3-p2, p3-origin)
+        // - interior: cross(direction(t), point(t)-origin)
+        const cross_val = if (best_t <= 0.0) blk: {
+            // Start point: use first control leg
+            const ab = self.p1.sub(self.p0);
+            const qa = self.p0.sub(origin);
+            break :blk ab.cross(qa);
+        } else if (best_t >= 1.0) blk: {
+            // End point: use last control leg
+            const cd = self.p3.sub(self.p2);
+            const qd = self.p3.sub(origin);
+            break :blk cd.cross(qd);
+        } else blk: {
+            // Interior: use actual tangent
+            const tangent = self.direction(best_t);
+            break :blk tangent.cross(qp);
+        };
+
+        const sign: f64 = if (cross_val >= 0) 1.0 else -1.0;
+
+        // Orthogonality = |dot(tangent, approach_dir)|
+        // 0 = perpendicular (best), 1 = parallel (worst)
         const tangent = self.direction(best_t);
-        const sign: f64 = if (tangent.cross(d) < 0) -1.0 else 1.0;
+        const ortho = if (dist == 0) 0.0 else @abs(tangent.normalize().dot(qp.normalize()));
 
-        const ortho = if (dist == 0) 0.0 else @abs(tangent.normalize().cross(d.normalize()));
-
-        return SignedDistance.init(sign * dist, ortho);
+        return DistanceResult.init(SignedDistance.init(sign * dist, ortho), best_t);
     }
 
     /// Get the second derivative of the curve at parameter t.
@@ -578,6 +661,16 @@ pub const EdgeSegment = union(enum) {
         };
     }
 
+    /// Compute the signed distance and closest parameter from a point to this segment.
+    /// Returns both the distance and the parameter t where the closest point lies.
+    pub fn signedDistanceWithParam(self: EdgeSegment, origin: Vec2) DistanceResult {
+        return switch (self) {
+            .linear => |s| s.signedDistanceWithParam(origin),
+            .quadratic => |s| s.signedDistanceWithParam(origin),
+            .cubic => |s| s.signedDistanceWithParam(origin),
+        };
+    }
+
     /// Get the bounding box of this segment.
     pub fn bounds(self: EdgeSegment) Bounds {
         return switch (self) {
@@ -642,6 +735,66 @@ pub const EdgeSegment = union(enum) {
         };
     }
 };
+
+/// Convert a true signed distance to pseudo-distance.
+///
+/// This is a key function for MSDF quality. When the closest point on an edge
+/// is at or beyond an endpoint (param <= 0 or param >= 1), the true distance
+/// is the Euclidean distance to that endpoint. However, this causes problems
+/// at corners where multiple edges meet at the same point.
+///
+/// Pseudo-distance instead extends the edge's tangent line infinitely and
+/// uses the perpendicular distance to that extended line when the query point
+/// is "beyond" the endpoint in the tangent direction.
+///
+/// This creates smoother transitions at corners because different colored edges
+/// meeting at a corner will have different pseudo-distances based on their
+/// respective tangent directions.
+///
+/// Algorithm (matches msdfgen):
+/// - If param < 0: extend tangent at t=0 backward
+///   - If point is "behind" the start (dot < 0), use perpendicular distance
+/// - If param > 1: extend tangent at t=1 forward
+///   - If point is "beyond" the end (dot > 0), use perpendicular distance
+/// - Only update if perpendicular distance magnitude <= true distance magnitude
+pub fn distanceToPseudoDistance(edge: EdgeSegment, origin: Vec2, distance: *SignedDistance, param: f64) void {
+    if (param < 0) {
+        // Closest point was before the segment start
+        const dir = edge.direction(0).normalize();
+        const aq = origin.sub(edge.startPoint());
+        const ts = aq.dot(dir);
+
+        // Only convert if the point is "behind" the start (in negative tangent direction)
+        if (ts < 0) {
+            // Note: msdfgen uses crossProduct(aq, dir), not crossProduct(dir, aq)
+            // cross(a, b) = -cross(b, a), so the sign matters!
+            const perpendicular_distance = aq.cross(dir);
+            // Only use pseudo-distance if it's closer or equal to true distance
+            if (@abs(perpendicular_distance) <= @abs(distance.distance)) {
+                distance.distance = perpendicular_distance;
+                distance.orthogonality = 0; // Perfect orthogonality for perpendicular approach
+            }
+        }
+    } else if (param > 1) {
+        // Closest point was after the segment end
+        const dir = edge.direction(1).normalize();
+        const bq = origin.sub(edge.endPoint());
+        const ts = bq.dot(dir);
+
+        // Only convert if the point is "beyond" the end (in positive tangent direction)
+        if (ts > 0) {
+            // Note: msdfgen uses crossProduct(bq, dir), not crossProduct(dir, bq)
+            const perpendicular_distance = bq.cross(dir);
+            // Only use pseudo-distance if it's closer or equal to true distance
+            if (@abs(perpendicular_distance) <= @abs(distance.distance)) {
+                distance.distance = perpendicular_distance;
+                distance.orthogonality = 0; // Perfect orthogonality for perpendicular approach
+            }
+        }
+    }
+    // If param is in [0, 1], the closest point is on the interior of the segment
+    // and no conversion is needed - true distance is correct
+}
 
 // ============================================================================
 // Tests
