@@ -47,9 +47,9 @@ pub const GenerateOptions = struct {
     padding: u32 = 4,
     /// Distance field range in pixels.
     range: f64 = 4.0,
-    /// Apply error correction to fix artifacts on curves.
-    /// Disabled by default as it can round sharp corners.
-    error_correction: bool = false,
+    /// Apply error correction to fix artifacts on curves and multi-contour glyphs.
+    /// Enabled by default. Corner protection preserves sharp corners while fixing artifacts.
+    error_correction: bool = true,
 };
 
 /// Options for generating a font atlas.
@@ -62,9 +62,9 @@ pub const AtlasOptions = struct {
     padding: u32 = 4,
     /// Distance field range in pixels.
     range: f64 = 4.0,
-    /// Apply error correction to fix artifacts on curves.
-    /// Disabled by default as it can round sharp corners.
-    error_correction: bool = false,
+    /// Apply error correction to fix artifacts on curves and multi-contour glyphs.
+    /// Enabled by default. Corner protection preserves sharp corners while fixing artifacts.
+    error_correction: bool = true,
 };
 
 /// Metrics for a rendered glyph.

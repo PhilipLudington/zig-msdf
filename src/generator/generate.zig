@@ -523,7 +523,56 @@ fn detectClashes(stencil: []u8, bitmap: *MsdfBitmap) void {
             const g = rgb[1];
             const b = rgb[2];
 
-            // Check for interior gap artifacts FIRST (overrides protection)
+            // Check for EXTREME CHANNEL ARTIFACTS - these ALWAYS override protection
+            // At real corners, all channels have moderate values (50-200) with intentional disagreement
+            // Artifacts have extreme values or patterns that cause wrong median values
+
+            const max_channel = @max(r, @max(g, b));
+            const min_channel = @min(r, @min(g, b));
+            const spread = max_channel - min_channel;
+
+            // Pattern 1: Extreme values - channels near 0 or near 255 with significant spread
+            // When a channel is at/near 0, even small spread indicates an artifact
+            const at_zero: u8 = 5; // Effectively zero
+            const near_zero: u8 = 20;
+            const near_max: u8 = 235;
+            const has_at_zero = (r <= at_zero or g <= at_zero or b <= at_zero);
+            const has_near_zero = (r < near_zero or g < near_zero or b < near_zero);
+            const has_near_max = (r > near_max or g > near_max or b > near_max);
+            // When channel is exactly 0, any significant spread is an artifact
+            // Valid edge pixels have all channels moving together, not one stuck at 0
+            const is_extreme_artifact = (has_at_zero and spread > 50) or
+                ((has_near_zero or has_near_max) and spread > 90);
+
+            // Pattern 2: "Hole-causing" artifacts - two channels agree (outside), one disagrees (inside)
+            // Example: R=65 G=65 B=167 -> median=65 creates a hole where there should be fill
+            // Detect when two channels are low and one is clearly inside
+            const outside_thresh: u8 = 110; // Two channels below this
+            const inside_thresh: u8 = 155; // One channel above this
+            const is_hole_artifact =
+                // Two low, one high (creates low median = hole)
+                ((r < outside_thresh and b < outside_thresh and g > inside_thresh) or
+                (r < outside_thresh and g < outside_thresh and b > inside_thresh) or
+                (g < outside_thresh and b < outside_thresh and r > inside_thresh)) and spread > 70;
+
+            // Pattern 3: "Spike-causing" artifacts - two channels agree (inside), one disagrees (outside)
+            // Example: R=214 G=40 B=214 -> median=214 creates a spike where there should be empty
+            // This is the inverse of pattern 2
+            const is_spike_artifact =
+                // Two high, one low (creates high median = spike)
+                ((r > inside_thresh and b > inside_thresh and g < outside_thresh) or
+                (r > inside_thresh and g > inside_thresh and b < outside_thresh) or
+                (g > inside_thresh and b > inside_thresh and r < outside_thresh)) and spread > 70;
+
+            if (is_extreme_artifact or is_hole_artifact or is_spike_artifact) {
+                // This is definitely an artifact - override protection
+                stencil[idx] |= StencilFlags.ERROR;
+                // Clear protection flag so correction will apply
+                stencil[idx] &= ~StencilFlags.PROTECTED;
+                continue;
+            }
+
+            // Check for interior gap artifacts (respects protection for moderate cases)
             // These occur when one channel finds a far-away edge on the opposite side
             // Pattern: two channels agree (close values), one channel is very different
 
@@ -533,7 +582,7 @@ fn detectClashes(stencil: []u8, bitmap: *MsdfBitmap) void {
             const gb_diff = if (g > b) g - b else b - g;
 
             const agreement_threshold: u8 = 50; // Two channels agree within this
-            const outlier_threshold: u8 = 40;   // Outlier channel differs by at least this much
+            const outlier_threshold: u8 = 40; // Outlier channel differs by at least this much
 
             var is_gap_artifact = false;
 
