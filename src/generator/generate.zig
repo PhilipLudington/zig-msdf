@@ -244,13 +244,22 @@ pub fn generateMsdf(
 /// This function implements MSDF pseudo-distance calculation:
 /// 1. Find the closest edge for each color channel (using true distance)
 /// 2. Convert the winning edge's distance to pseudo-distance
+/// 3. Ensure sign consistency using winding number for multi-contour shapes
 ///
 /// Pseudo-distance extends edge tangent lines beyond endpoints, which helps
 /// create sharper corners by giving different colored edges different distances.
+///
+/// For multi-contour shapes (like @, $, 8), different channels may find edges
+/// from different contours that disagree about inside/outside. We use the
+/// winding number to determine the true inside/outside status and ensure
+/// all channels agree on the sign.
 fn computeChannelDistances(shape: Shape, point: Vec2) [3]f64 {
     var min_red = SignedDistance.infinite;
     var min_green = SignedDistance.infinite;
     var min_blue = SignedDistance.infinite;
+
+    // Also track the overall minimum distance (for sign determination)
+    var min_overall = SignedDistance.infinite;
 
     // Track the edge and parameter for each minimum (needed for pseudo-distance)
     var red_edge: ?EdgeSegment = null;
@@ -267,6 +276,11 @@ fn computeChannelDistances(shape: Shape, point: Vec2) [3]f64 {
             const sd = result.distance;
             const param = result.param;
             const color = e.getColor();
+
+            // Track overall minimum for sign determination
+            if (sd.lessThan(min_overall)) {
+                min_overall = sd;
+            }
 
             // Update minimum for each channel this edge contributes to
             if (color.hasRed()) {
@@ -307,7 +321,6 @@ fn computeChannelDistances(shape: Shape, point: Vec2) [3]f64 {
 
     // Negate distances to match MSDF convention:
     // Our edge sign calculation produces inverted results compared to msdfgen.
-    // Rather than changing all segment types, we negate here.
     const r = -min_red.distance;
     const g = -min_green.distance;
     const b = -min_blue.distance;
@@ -504,6 +517,61 @@ fn protectEdges(stencil: []u8, bitmap: *MsdfBitmap, protection_radius: f64) void
     }
 }
 
+/// Detect if a pixel's median value is isolated (contradicts all neighbors).
+/// This identifies artifacts like holes/spikes while preserving valid edge color diversity.
+/// A pixel is an isolated artifact if:
+/// - Its median strongly disagrees with majority of neighbors about inside/outside
+/// - It's not on a legitimate edge (where medians transition gradually)
+fn detectIsolatedMedianArtifact(bitmap: *MsdfBitmap, x: u32, y: u32, my_med: u8) bool {
+    const threshold: u8 = 127;
+    const my_inside = my_med > threshold;
+
+    // Count neighbors and how many agree with us
+    var neighbor_count: u32 = 0;
+    var agree_count: u32 = 0;
+    var total_neighbor_med: u32 = 0;
+
+    const offsets = [_][2]i32{
+        .{ -1, -1 }, .{ 0, -1 }, .{ 1, -1 },
+        .{ -1, 0 },              .{ 1, 0 },
+        .{ -1, 1 },  .{ 0, 1 },  .{ 1, 1 },
+    };
+
+    for (offsets) |off| {
+        const nx_i = @as(i32, @intCast(x)) + off[0];
+        const ny_i = @as(i32, @intCast(y)) + off[1];
+
+        if (nx_i < 0 or nx_i >= @as(i32, @intCast(bitmap.width)) or
+            ny_i < 0 or ny_i >= @as(i32, @intCast(bitmap.height)))
+        {
+            continue;
+        }
+
+        const nx = @as(u32, @intCast(nx_i));
+        const ny = @as(u32, @intCast(ny_i));
+        const n_rgb = bitmap.getPixel(nx, ny);
+        const n_med = median3(n_rgb[0], n_rgb[1], n_rgb[2]);
+        const n_inside = n_med > threshold;
+
+        neighbor_count += 1;
+        total_neighbor_med += n_med;
+        if (n_inside == my_inside) {
+            agree_count += 1;
+        }
+    }
+
+    if (neighbor_count < 3) return false;
+
+    // Isolated artifact: strongly disagrees with almost all neighbors
+    // AND the median difference from neighbors is large
+    const avg_neighbor_med = total_neighbor_med / neighbor_count;
+    const med_diff = if (my_med > avg_neighbor_med) my_med - @as(u8, @intCast(avg_neighbor_med)) else @as(u8, @intCast(avg_neighbor_med)) - my_med;
+
+    // Must disagree with at least 6 of 8 neighbors AND have large median difference
+    // This ensures we only catch true isolated anomalies, not edge transitions
+    return agree_count <= 2 and med_diff > 60;
+}
+
 /// Detect pixels that clash with neighbors and need correction.
 /// Only marks non-protected pixels as errors, EXCEPT for severely
 /// disagreeing pixels which override protection.
@@ -523,51 +591,16 @@ fn detectClashes(stencil: []u8, bitmap: *MsdfBitmap) void {
             const g = rgb[1];
             const b = rgb[2];
 
-            // Check for EXTREME CHANNEL ARTIFACTS - these ALWAYS override protection
-            // At real corners, all channels have moderate values (50-200) with intentional disagreement
-            // Artifacts have extreme values or patterns that cause wrong median values
+            // Check for ISOLATED MEDIAN ARTIFACTS - pixels whose median contradicts all neighbors
+            // This catches holes/spikes while preserving valid edge color diversity.
+            // Valid edge pixels: may have high spread but neighbors have similar medians (all on edge)
+            // Artifact pixels: have median that starkly contradicts surrounding region
+            const med = median3(r, g, b);
+            const is_isolated_artifact = detectIsolatedMedianArtifact(bitmap, x, y, med);
 
-            const max_channel = @max(r, @max(g, b));
-            const min_channel = @min(r, @min(g, b));
-            const spread = max_channel - min_channel;
-
-            // Pattern 1: Extreme values - channels near 0 or near 255 with significant spread
-            // When a channel is at/near 0, even small spread indicates an artifact
-            const at_zero: u8 = 5; // Effectively zero
-            const near_zero: u8 = 20;
-            const near_max: u8 = 235;
-            const has_at_zero = (r <= at_zero or g <= at_zero or b <= at_zero);
-            const has_near_zero = (r < near_zero or g < near_zero or b < near_zero);
-            const has_near_max = (r > near_max or g > near_max or b > near_max);
-            // When channel is exactly 0, any significant spread is an artifact
-            // Valid edge pixels have all channels moving together, not one stuck at 0
-            const is_extreme_artifact = (has_at_zero and spread > 50) or
-                ((has_near_zero or has_near_max) and spread > 90);
-
-            // Pattern 2: "Hole-causing" artifacts - two channels agree (outside), one disagrees (inside)
-            // Example: R=65 G=65 B=167 -> median=65 creates a hole where there should be fill
-            // Detect when two channels are low and one is clearly inside
-            const outside_thresh: u8 = 110; // Two channels below this
-            const inside_thresh: u8 = 155; // One channel above this
-            const is_hole_artifact =
-                // Two low, one high (creates low median = hole)
-                ((r < outside_thresh and b < outside_thresh and g > inside_thresh) or
-                (r < outside_thresh and g < outside_thresh and b > inside_thresh) or
-                (g < outside_thresh and b < outside_thresh and r > inside_thresh)) and spread > 70;
-
-            // Pattern 3: "Spike-causing" artifacts - two channels agree (inside), one disagrees (outside)
-            // Example: R=214 G=40 B=214 -> median=214 creates a spike where there should be empty
-            // This is the inverse of pattern 2
-            const is_spike_artifact =
-                // Two high, one low (creates high median = spike)
-                ((r > inside_thresh and b > inside_thresh and g < outside_thresh) or
-                (r > inside_thresh and g > inside_thresh and b < outside_thresh) or
-                (g > inside_thresh and b > inside_thresh and r < outside_thresh)) and spread > 70;
-
-            if (is_extreme_artifact or is_hole_artifact or is_spike_artifact) {
-                // This is definitely an artifact - override protection
+            if (is_isolated_artifact) {
+                // Override protection for isolated artifacts
                 stencil[idx] |= StencilFlags.ERROR;
-                // Clear protection flag so correction will apply
                 stencil[idx] &= ~StencilFlags.PROTECTED;
                 continue;
             }

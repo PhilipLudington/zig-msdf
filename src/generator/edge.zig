@@ -757,7 +757,7 @@ pub const EdgeSegment = union(enum) {
 /// meeting at a corner will have different pseudo-distances based on their
 /// respective tangent directions.
 ///
-/// Algorithm (matches msdfgen):
+/// Algorithm (based on msdfgen):
 /// - If param < 0: extend tangent at t=0 backward
 ///   - If point is "behind" the start (dot < 0), use perpendicular distance
 /// - If param > 1: extend tangent at t=1 forward

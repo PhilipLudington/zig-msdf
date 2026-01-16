@@ -589,6 +589,117 @@ zig build debug-s-curvature
 zig build test-dejavu
 ```
 
+## @ Character Hole Investigation (January 2026)
+
+### Problem
+
+The `@` character displays a hole/artifact in the center of the glyph. This occurs in the **base MSDF generation**, not caused by error correction. The issue persists even with error correction completely disabled.
+
+### Pixel Comparison Analysis
+
+Compared zig-msdf output (`at_base.ppm`) vs msdfgen output (`at_msdfgen.ppm`) for the `@` character:
+
+| Metric | zig-msdf | msdfgen |
+|--------|----------|---------|
+| Inside pixels | Saturated colors (one channel at 0) | Balanced near-white |
+| Example pixel (57,18) | RGB=(116, 116, 0) med=116 | RGB=(246, 246, 255) med=246 |
+| Color spread | Very high (> 200) | Low (< 100) |
+
+**Key observation:** zig-msdf produces saturated colors where one channel is at 0 or very low, while msdfgen produces balanced values near white (255) for inside pixels. This causes the median to be too low, creating the "hole" artifact.
+
+### Root Cause Analysis
+
+1. **Multi-contour interference**: The `@` has multiple contours (outer circle, inner swirl). Each RGB channel finds the closest edge of its color, but different channels may find edges from different contours.
+
+2. **Sign disagreement**: When channel R finds an edge from contour A and channel G finds an edge from contour B, they may disagree about inside/outside if the contours have different winding directions.
+
+3. **msdfgen's solution**: Uses `OverlappingContourCombiner` which:
+   - Computes per-contour winding numbers
+   - Separates `innerEdgeSelector` and `outerEdgeSelector` based on winding
+   - Combines distances considering which contour matters for each pixel
+
+### Fix Attempts
+
+#### Attempt 1: Sign Preservation in Pseudo-Distance
+
+Modified `distanceToPseudoDistance()` in `edge.zig` to preserve the true distance sign like msdfgen:
+
+```zig
+const true_sign: f64 = if (distance.distance >= 0) 1.0 else -1.0;
+const perpendicular_distance = true_sign * @abs(aq.cross(dir));
+```
+
+**Result:** Tests failed - coverage dropped to 14-15% (everything outside). Reverted.
+
+#### Attempt 2: Inverted Sign for zig-msdf Convention
+
+Tried inverting the sign (zig-msdf uses opposite convention from msdfgen):
+
+```zig
+const true_sign: f64 = if (distance.distance >= 0) -1.0 else 1.0;
+```
+
+**Result:** Tests still failed with similar coverage issues. Reverted.
+
+#### Attempt 3: Winding-Based Sign Correction
+
+Added winding number check in `computeChannelDistances()` to force all channels to have consistent sign:
+
+```zig
+const winding = computeWinding(shape, point);
+const is_inside = winding != 0;
+
+// Force all channels to agree with winding
+if (is_inside) {
+    if (r < 0) r = @abs(r);
+    if (g < 0) g = @abs(g);
+    if (b < 0) b = @abs(b);
+} else {
+    if (r > 0) r = -@abs(r);
+    // etc.
+}
+```
+
+**Result:** Tests failed - coverage jumped to 83-84% (everything inside). The approach is too aggressive.
+
+### Why Simple Fixes Don't Work
+
+The winding-based approach fails because it **destroys the MSDF property**:
+
+1. **MSDF requires channel diversity at edges**: Sharp corners are created by having different channel values. If all channels have the same sign/magnitude near edges, corners become rounded.
+
+2. **The fix is too global**: Forcing all channels to match winding doesn't account for the fact that channels SHOULD disagree near edges - that's how MSDF encodes corner sharpness.
+
+3. **Per-pixel vs per-contour**: msdfgen's approach is more nuanced - it considers which contour is relevant for each pixel, not just the global winding number.
+
+### Current Status
+
+**BLOCKED** - Need to implement msdfgen's `OverlappingContourCombiner` approach properly:
+
+1. Track distances per-contour, not just per-channel
+2. Use per-contour winding to determine inner vs outer selection
+3. Combine contour results before combining channels
+
+This is a significant architectural change, not a simple fix.
+
+### Relevant msdfgen Code
+
+| File | Purpose |
+|------|---------|
+| `core/contour-combiners.h/.cpp` | `OverlappingContourCombiner` class |
+| `core/edge-selectors.h/.cpp` | Per-channel distance selection with inner/outer |
+| `core/msdfgen.cpp` | Main generation loop using combiners |
+
+### Test Commands
+
+```bash
+# Generate @ character PPMs for comparison
+zig build test-at
+
+# Compare pixel values
+# (manual inspection of at_base.ppm vs at_msdfgen.ppm)
+```
+
 ## Environment
 
 - Font: DejaVu Sans (TrueType, quadratic beziers)
