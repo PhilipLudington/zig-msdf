@@ -75,6 +75,12 @@ pub const LinearSegment = struct {
         const ab = self.p1.sub(self.p0); // direction vector
         const ab_len_sq = ab.lengthSquared();
 
+        // Handle degenerate segment (zero length) - return infinite distance
+        // This prevents division by zero and ensures degenerate edges don't affect results
+        if (ab_len_sq < 1e-12) {
+            return DistanceResult.init(SignedDistance.infinite, 0.0);
+        }
+
         // Project point onto line (unclamped parameter)
         const param = aq.dot(ab) / ab_len_sq;
 
@@ -766,8 +772,8 @@ pub fn distanceToPseudoDistance(edge: EdgeSegment, origin: Vec2, distance: *Sign
 
         // Only convert if the point is "behind" the start (in negative tangent direction)
         if (ts < 0) {
-            // Note: msdfgen uses crossProduct(aq, dir), not crossProduct(dir, aq)
-            // cross(a, b) = -cross(b, a), so the sign matters!
+            // Perpendicular distance to the tangent line extension
+            // msdfgen uses crossProduct(aq, dir)
             const perpendicular_distance = aq.cross(dir);
             // Only use pseudo-distance if it's closer or equal to true distance
             if (@abs(perpendicular_distance) <= @abs(distance.distance)) {
@@ -783,7 +789,8 @@ pub fn distanceToPseudoDistance(edge: EdgeSegment, origin: Vec2, distance: *Sign
 
         // Only convert if the point is "beyond" the end (in positive tangent direction)
         if (ts > 0) {
-            // Note: msdfgen uses crossProduct(bq, dir), not crossProduct(dir, bq)
+            // Perpendicular distance to the tangent line extension
+            // msdfgen uses crossProduct(bq, dir)
             const perpendicular_distance = bq.cross(dir);
             // Only use pseudo-distance if it's closer or equal to true distance
             if (@abs(perpendicular_distance) <= @abs(distance.distance)) {

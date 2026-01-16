@@ -256,10 +256,10 @@ pub fn generateGlyph(
         transform,
     ) catch return MsdfError.OutOfMemory;
 
-    // TEMPORARILY DISABLED: Apply error correction with corner protection
+    // Apply error correction with corner protection
     // Pass shape and transform so corners are protected from flattening
-    // var bitmap_mut = bitmap;
-    // generate.correctErrorsWithProtection(&bitmap_mut, shape, transform);
+    var bitmap_mut = bitmap;
+    generate.correctErrorsWithProtection(&bitmap_mut, shape, transform);
 
     // Calculate metrics (normalized to font units, caller can scale as needed)
     const metrics = GlyphMetrics{

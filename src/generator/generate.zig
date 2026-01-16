@@ -239,12 +239,11 @@ pub fn generateMsdf(
 /// Returns [red_distance, green_distance, blue_distance].
 ///
 /// This function implements MSDF pseudo-distance calculation:
-/// 1. Find the closest edge for each color channel
-/// 2. Track both the distance AND the parameter t where the closest point lies
-/// 3. Convert true distance to pseudo-distance using distanceToPseudoDistance
+/// 1. Find the closest edge for each color channel (using true distance)
+/// 2. Convert the winning edge's distance to pseudo-distance
 ///
-/// Pseudo-distance is crucial for smooth corners - it extends edge tangent lines
-/// beyond endpoints so different colored edges at a corner give different distances.
+/// Pseudo-distance extends edge tangent lines beyond endpoints, which helps
+/// create sharper corners by giving different colored edges different distances.
 fn computeChannelDistances(shape: Shape, point: Vec2) [3]f64 {
     var min_red = SignedDistance.infinite;
     var min_green = SignedDistance.infinite;
@@ -292,7 +291,7 @@ fn computeChannelDistances(shape: Shape, point: Vec2) [3]f64 {
     }
 
     // Convert to pseudo-distance for each channel
-    // This extends edge tangent lines beyond endpoints for smooth corners
+    // This extends edge tangent lines beyond endpoints for smoother corners
     if (red_edge) |e| {
         edge_mod.distanceToPseudoDistance(e, point, &min_red, red_param);
     }
@@ -435,7 +434,8 @@ fn protectCorners(stencil: []u8, width: u32, height: u32, shape: Shape, transfor
 
                 // Mark the 4 surrounding texels as protected
                 const px = pixel_pos.x;
-                const py = pixel_pos.y;
+                // Flip Y to match bitmap storage (shape Y-up -> image Y-down)
+                const py = @as(f64, @floatFromInt(height)) - 1.0 - pixel_pos.y;
 
                 // Get the 4 texels that could be affected by this corner
                 const x0 = @as(i32, @intFromFloat(@floor(px)));

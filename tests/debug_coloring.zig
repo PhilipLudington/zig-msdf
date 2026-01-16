@@ -63,6 +63,22 @@ pub fn main() !void {
 
         std.debug.print("Generated {d}x{d} bitmap\n", .{ result.width, result.height });
 
+        // Export PPM file for visual verification
+        if (char == 'u') {
+            const ppm_path = "/tmp/u_glyph.ppm";
+            var ppm_file = std.fs.cwd().createFile(ppm_path, .{}) catch |err| {
+                std.debug.print("Failed to create PPM: {}\n", .{err});
+                continue;
+            };
+            defer ppm_file.close();
+
+            var header_buf: [64]u8 = undefined;
+            const header = std.fmt.bufPrint(&header_buf, "P6\n{d} {d}\n255\n", .{ result.width, result.height }) catch unreachable;
+            ppm_file.writeAll(header) catch {};
+            ppm_file.writeAll(result.pixels) catch {};
+            std.debug.print("Exported to {s}\n", .{ppm_path});
+        }
+
         // Debug: show where corners would be protected
         if (char == 'U' or char == 'u') {
             var shape_for_corners = parseGlyphShape(allocator, font, char) catch continue;
@@ -133,29 +149,25 @@ pub fn main() !void {
                 std.debug.print("\n", .{});
             }
 
-            std.debug.print("\n  === Disagreement pixels in center gap (x=26-38) ===\n", .{});
+            std.debug.print("\n  === ALL pixels in center gap (x=28-36, y=4-10) ===\n", .{});
+            std.debug.print("  (showing actual values - gap should be OUTSIDE, values < 127)\n", .{});
             y = 4;
-            while (y < 14) : (y += 1) {
-                var x: u32 = 26;
-                while (x < 39) : (x += 1) {
+            while (y <= 10) : (y += 1) {
+                std.debug.print("  y={d}: ", .{y});
+                var x: u32 = 28;
+                while (x <= 36) : (x += 1) {
                     const idx = (y * result.width + x) * 3;
                     const r = result.pixels[idx];
                     const g = result.pixels[idx + 1];
                     const b = result.pixels[idx + 2];
                     const med = @max(@min(r, g), @min(@max(r, g), b));
-                    const r_inside = r > 127;
-                    const g_inside = g > 127;
-                    const b_inside = b > 127;
-                    const all_agree = (r_inside == g_inside) and (g_inside == b_inside);
-
-                    if (!all_agree) {
-                        const r_diff = if (r > med) r - med else med - r;
-                        const g_diff = if (g > med) g - med else med - g;
-                        const b_diff = if (b > med) b - med else med - b;
-                        const max_diff = @max(r_diff, @max(g_diff, b_diff));
-                        std.debug.print("    ({d},{d}): R={d} G={d} B={d} med={d} maxdiff={d}\n", .{ x, y, r, g, b, med, max_diff });
+                    if (med > 127) {
+                        std.debug.print("{d:3}! ", .{med}); // ! = wrongly inside
+                    } else {
+                        std.debug.print("{d:3}  ", .{med});
                     }
                 }
+                std.debug.print("\n", .{});
             }
 
             // Show all remaining disagreement pixels
