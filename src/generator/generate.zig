@@ -250,29 +250,57 @@ fn computeChannelDistances(shape: Shape, point: Vec2) [3]f64 {
     var min_green = SignedDistance.infinite;
     var min_blue = SignedDistance.infinite;
 
+    // Track the edge and parameter for each minimum (needed for pseudo-distance)
+    var red_edge: ?EdgeSegment = null;
+    var green_edge: ?EdgeSegment = null;
+    var blue_edge: ?EdgeSegment = null;
+    var red_param: f64 = 0;
+    var green_param: f64 = 0;
+    var blue_param: f64 = 0;
+
     // Find minimum distance per channel across all edges
     for (shape.contours) |contour| {
         for (contour.edges) |e| {
-            const sd = e.signedDistance(point);
+            const result = e.signedDistanceWithParam(point);
+            const sd = result.distance;
+            const param = result.param;
             const color = e.getColor();
 
             // Update minimum for each channel this edge contributes to
             if (color.hasRed()) {
                 if (sd.lessThan(min_red)) {
                     min_red = sd;
+                    red_edge = e;
+                    red_param = param;
                 }
             }
             if (color.hasGreen()) {
                 if (sd.lessThan(min_green)) {
                     min_green = sd;
+                    green_edge = e;
+                    green_param = param;
                 }
             }
             if (color.hasBlue()) {
                 if (sd.lessThan(min_blue)) {
                     min_blue = sd;
+                    blue_edge = e;
+                    blue_param = param;
                 }
             }
         }
+    }
+
+    // Convert to pseudo-distance for each channel
+    // This extends edge tangent lines beyond endpoints for smooth corners
+    if (red_edge) |e| {
+        edge_mod.distanceToPseudoDistance(e, point, &min_red, red_param);
+    }
+    if (green_edge) |e| {
+        edge_mod.distanceToPseudoDistance(e, point, &min_green, green_param);
+    }
+    if (blue_edge) |e| {
+        edge_mod.distanceToPseudoDistance(e, point, &min_blue, blue_param);
     }
 
     // Negate distances to match MSDF convention:
@@ -413,11 +441,11 @@ fn protectCorners(stencil: []u8, width: u32, height: u32, shape: Shape, transfor
                 const x0 = @as(i32, @intFromFloat(@floor(px)));
                 const y0 = @as(i32, @intFromFloat(@floor(py)));
 
-                // Mark a 3x3 region around the corner for extra protection
-                var dy: i32 = -1;
-                while (dy <= 1) : (dy += 1) {
-                    var dx: i32 = -1;
-                    while (dx <= 1) : (dx += 1) {
+                // Mark a 7x7 region around the corner for extra protection
+                var dy: i32 = -3;
+                while (dy <= 3) : (dy += 1) {
+                    var dx: i32 = -3;
+                    while (dx <= 3) : (dx += 1) {
                         const tx = x0 + dx;
                         const ty = y0 + dy;
 
@@ -474,7 +502,8 @@ fn protectEdges(stencil: []u8, bitmap: *MsdfBitmap, protection_radius: f64) void
 }
 
 /// Detect pixels that clash with neighbors and need correction.
-/// Only marks non-protected pixels as errors.
+/// Only marks non-protected pixels as errors, EXCEPT for severely
+/// disagreeing pixels which override protection.
 fn detectClashes(stencil: []u8, bitmap: *MsdfBitmap) void {
     if (bitmap.width < 2 or bitmap.height < 2) return;
 
@@ -486,21 +515,90 @@ fn detectClashes(stencil: []u8, bitmap: *MsdfBitmap) void {
         while (x < bitmap.width) : (x += 1) {
             const idx = @as(usize, y) * bitmap.width + x;
 
-            // Skip protected pixels
-            if (stencil[idx] & StencilFlags.PROTECTED != 0) continue;
-
             const rgb = bitmap.getPixel(x, y);
             const r = rgb[0];
             const g = rgb[1];
             const b = rgb[2];
 
-            // Check for channel disagreement
-            const r_inside: u8 = if (r > threshold) 1 else 0;
-            const g_inside: u8 = if (g > threshold) 1 else 0;
-            const b_inside: u8 = if (b > threshold) 1 else 0;
-            const inside_count = r_inside + g_inside + b_inside;
+            // Check for interior gap artifacts FIRST (overrides protection)
+            // These occur when one channel finds a far-away edge on the opposite side
+            // Pattern: two channels agree (close values), one channel is very different
+
+            // Check if two channels agree and one is an outlier
+            const rg_diff = if (r > g) r - g else g - r;
+            const rb_diff = if (r > b) r - b else b - r;
+            const gb_diff = if (g > b) g - b else b - g;
+
+            const agreement_threshold: u8 = 50; // Two channels agree within this
+            const outlier_threshold: u8 = 40;   // Outlier channel differs by at least this much
+
+            var is_gap_artifact = false;
+
+            // R and G agree, B is outlier
+            if (rg_diff <= agreement_threshold) {
+                const avg_rg = (@as(u16, r) + @as(u16, g)) / 2;
+                const b16 = @as(u16, b);
+                const b_from_avg = if (b16 > avg_rg) b16 - avg_rg else avg_rg - b16;
+                if (b_from_avg > outlier_threshold) {
+                    is_gap_artifact = true;
+                }
+            }
+            // R and B agree, G is outlier
+            if (rb_diff <= agreement_threshold) {
+                const avg_rb = (@as(u16, r) + @as(u16, b)) / 2;
+                const g16 = @as(u16, g);
+                const g_from_avg = if (g16 > avg_rb) g16 - avg_rb else avg_rb - g16;
+                if (g_from_avg > outlier_threshold) {
+                    is_gap_artifact = true;
+                }
+            }
+            // G and B agree, R is outlier
+            if (gb_diff <= agreement_threshold) {
+                const avg_gb = (@as(u16, g) + @as(u16, b)) / 2;
+                const r16 = @as(u16, r);
+                const r_from_avg = if (r16 > avg_gb) r16 - avg_gb else avg_gb - r16;
+                if (r_from_avg > outlier_threshold) {
+                    is_gap_artifact = true;
+                }
+            }
+
+            if (is_gap_artifact) {
+                // Only mark as error if not protected (preserve corner pixels)
+                if (stencil[idx] & StencilFlags.PROTECTED == 0) {
+                    stencil[idx] |= StencilFlags.ERROR;
+                }
+                continue;
+            }
+
+            // Check for threshold boundary artifacts: channels are near 127 but disagree
+            // about inside/outside. Even small differences can cause artifacts here.
+            const r_inside = r > threshold;
+            const g_inside = g > threshold;
+            const b_inside = b > threshold;
+            const inside_count = (if (r_inside) @as(u8, 1) else 0) + (if (g_inside) @as(u8, 1) else 0) + (if (b_inside) @as(u8, 1) else 0);
+
+            // If channels disagree (1 or 2 say inside) AND values are near threshold
+            if (inside_count == 1 or inside_count == 2) {
+                const near_threshold: u8 = 20;
+                const r_near = (r >= threshold - near_threshold and r <= threshold + near_threshold);
+                const g_near = (g >= threshold - near_threshold and g <= threshold + near_threshold);
+                const b_near = (b >= threshold - near_threshold and b <= threshold + near_threshold);
+
+                // If most values are near threshold, this is a boundary pixel with minor error
+                // But respect corner protection - corners need channel disagreement
+                if ((r_near and g_near) or (r_near and b_near) or (g_near and b_near)) {
+                    if (stencil[idx] & StencilFlags.PROTECTED == 0) {
+                        stencil[idx] |= StencilFlags.ERROR;
+                    }
+                    continue;
+                }
+            }
+
+            // Skip protected pixels for remaining cases
+            if (stencil[idx] & StencilFlags.PROTECTED != 0) continue;
 
             // Channels agree - check for spike artifacts only
+            // (inside_count already computed above)
             if (inside_count == 0 or inside_count == 3) {
                 // Even if channels agree, check for spike artifacts
                 // These are pixels with median values that spike relative to neighbors
