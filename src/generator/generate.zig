@@ -238,28 +238,179 @@ pub fn generateMsdf(
     return result;
 }
 
+/// Per-contour channel distances for the overlapping contour combiner.
+/// Stores the minimum distance for each color channel within a single contour,
+/// along with the contour's winding contribution at the sample point.
+const ContourChannelDistances = struct {
+    red: SignedDistance,
+    green: SignedDistance,
+    blue: SignedDistance,
+    red_edge: ?EdgeSegment,
+    green_edge: ?EdgeSegment,
+    blue_edge: ?EdgeSegment,
+    red_param: f64,
+    green_param: f64,
+    blue_param: f64,
+    winding: i32,
+
+    pub fn init() ContourChannelDistances {
+        return .{
+            .red = SignedDistance.infinite,
+            .green = SignedDistance.infinite,
+            .blue = SignedDistance.infinite,
+            .red_edge = null,
+            .green_edge = null,
+            .blue_edge = null,
+            .red_param = 0,
+            .green_param = 0,
+            .blue_param = 0,
+            .winding = 0,
+        };
+    }
+};
+
+/// Compute channel distances for a single contour.
+/// Returns per-channel minimum distances and the contour's winding at the point.
+fn computeContourChannelDistances(contour: Contour, point: Vec2) ContourChannelDistances {
+    var result = ContourChannelDistances.init();
+    result.winding = computeContourWinding(contour, point);
+
+    for (contour.edges) |e| {
+        const dist_result = e.signedDistanceWithParam(point);
+        const sd = dist_result.distance;
+        const param = dist_result.param;
+        const color = e.getColor();
+
+        if (color.hasRed() and sd.lessThan(result.red)) {
+            result.red = sd;
+            result.red_edge = e;
+            result.red_param = param;
+        }
+        if (color.hasGreen() and sd.lessThan(result.green)) {
+            result.green = sd;
+            result.green_edge = e;
+            result.green_param = param;
+        }
+        if (color.hasBlue() and sd.lessThan(result.blue)) {
+            result.blue = sd;
+            result.blue_edge = e;
+            result.blue_param = param;
+        }
+    }
+
+    // Apply pseudo-distance conversion for each channel
+    if (result.red_edge) |e| {
+        edge_mod.distanceToPseudoDistance(e, point, &result.red, result.red_param);
+    }
+    if (result.green_edge) |e| {
+        edge_mod.distanceToPseudoDistance(e, point, &result.green, result.green_param);
+    }
+    if (result.blue_edge) |e| {
+        edge_mod.distanceToPseudoDistance(e, point, &result.blue, result.blue_param);
+    }
+
+    return result;
+}
+
+/// Combine per-contour distances using the overlapping contour combiner algorithm.
+/// This resolves cross-contour interference by considering each contour's winding.
+///
+/// The algorithm handles the key insight that for multi-contour shapes:
+/// - If total_winding != 0, point is inside the filled region
+/// - If total_winding == 0, point is outside the filled region
+///
+/// For each contour, the distance sign indicates which side of that contour we're on:
+/// - Negative: on the "fill" side of this contour
+/// - Positive: on the "empty" side of this contour
+///
+/// We combine by taking the min absolute distance, but adjust signs based on whether
+/// that contour "counts" toward filling at this point.
+fn combineContourDistances(contour_results: []const ContourChannelDistances, total_winding: i32) [3]f64 {
+    const is_inside = total_winding != 0;
+
+    // Find minimum absolute distance for each channel
+    var min_r_abs: f64 = std.math.inf(f64);
+    var min_g_abs: f64 = std.math.inf(f64);
+    var min_b_abs: f64 = std.math.inf(f64);
+    var min_r: f64 = 0;
+    var min_g: f64 = 0;
+    var min_b: f64 = 0;
+
+    for (contour_results) |cr| {
+        // Negate distances to match MSDF convention
+        const r = -cr.red.distance;
+        const g = -cr.green.distance;
+        const b = -cr.blue.distance;
+
+        // Track minimum absolute distance for each channel
+        if (@abs(r) < min_r_abs) {
+            min_r_abs = @abs(r);
+            min_r = r;
+        }
+        if (@abs(g) < min_g_abs) {
+            min_g_abs = @abs(g);
+            min_g = g;
+        }
+        if (@abs(b) < min_b_abs) {
+            min_b_abs = @abs(b);
+            min_b = b;
+        }
+    }
+
+    // Ensure sign consistency: all channels should agree with total winding
+    // MSDF convention: negative = inside, positive = outside
+    if (is_inside) {
+        // Inside filled region: all distances should be negative
+        if (min_r > 0) min_r = -min_r;
+        if (min_g > 0) min_g = -min_g;
+        if (min_b > 0) min_b = -min_b;
+    } else {
+        // Outside filled region: all distances should be positive
+        if (min_r < 0) min_r = -min_r;
+        if (min_g < 0) min_g = -min_g;
+        if (min_b < 0) min_b = -min_b;
+    }
+
+    return .{ min_r, min_g, min_b };
+}
+
 /// Compute the minimum signed distance for each color channel.
 /// Returns [red_distance, green_distance, blue_distance].
 ///
-/// This function implements MSDF pseudo-distance calculation:
-/// 1. Find the closest edge for each color channel (using true distance)
-/// 2. Convert the winning edge's distance to pseudo-distance
-/// 3. Ensure sign consistency using winding number for multi-contour shapes
-///
-/// Pseudo-distance extends edge tangent lines beyond endpoints, which helps
-/// create sharper corners by giving different colored edges different distances.
-///
-/// For multi-contour shapes (like @, $, 8), different channels may find edges
-/// from different contours that disagree about inside/outside. We use the
-/// winding number to determine the true inside/outside status and ensure
-/// all channels agree on the sign.
+/// For single-contour shapes, uses the simple global minimum approach.
+/// For multi-contour shapes (like @, $, 8), uses the overlapping contour
+/// combiner algorithm to resolve cross-contour interference.
 fn computeChannelDistances(shape: Shape, point: Vec2) [3]f64 {
+    // Fast path: single contour doesn't need combiner
+    if (shape.contours.len <= 1) {
+        return computeChannelDistancesSingleContour(shape, point);
+    }
+
+    // Multi-contour: per-contour computation with combiner
+    var stack_buffer: [16]ContourChannelDistances = undefined;
+    if (shape.contours.len > 16) {
+        // Fallback for shapes with many contours (rare in fonts)
+        // Use simple algorithm which may have artifacts but won't crash
+        return computeChannelDistancesSingleContour(shape, point);
+    }
+    const contour_results = stack_buffer[0..shape.contours.len];
+
+    var total_winding: i32 = 0;
+    for (shape.contours, 0..) |contour, i| {
+        contour_results[i] = computeContourChannelDistances(contour, point);
+        total_winding += contour_results[i].winding;
+    }
+
+    return combineContourDistances(contour_results, total_winding);
+}
+
+/// Single-contour implementation of channel distance computation.
+/// This is the original algorithm, used as a fast path for single-contour shapes
+/// and as a fallback for shapes with too many contours.
+fn computeChannelDistancesSingleContour(shape: Shape, point: Vec2) [3]f64 {
     var min_red = SignedDistance.infinite;
     var min_green = SignedDistance.infinite;
     var min_blue = SignedDistance.infinite;
-
-    // Also track the overall minimum distance (for sign determination)
-    var min_overall = SignedDistance.infinite;
 
     // Track the edge and parameter for each minimum (needed for pseudo-distance)
     var red_edge: ?EdgeSegment = null;
@@ -276,11 +427,6 @@ fn computeChannelDistances(shape: Shape, point: Vec2) [3]f64 {
             const sd = result.distance;
             const param = result.param;
             const color = e.getColor();
-
-            // Track overall minimum for sign determination
-            if (sd.lessThan(min_overall)) {
-                min_overall = sd;
-            }
 
             // Update minimum for each channel this edge contributes to
             if (color.hasRed()) {
