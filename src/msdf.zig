@@ -43,13 +43,21 @@ pub const cff = @import("cff/cff.zig");
 pub const GenerateOptions = struct {
     /// Output texture size in pixels (width and height).
     size: u32 = 48,
-    /// Padding around the glyph in pixels.
+    /// Padding around the glyph in pixels (used when msdfgen_autoframe is false).
     padding: u32 = 4,
     /// Distance field range in pixels.
     range: f64 = 4.0,
     /// Apply error correction to fix artifacts on curves and multi-contour glyphs.
     /// Disabled by default to preserve MSDF color diversity for sharp edges.
     error_correction: bool = false,
+    /// Use msdfgen's autoframe algorithm for transform calculation.
+    /// When true, produces output more similar to msdfgen with -autoframe flag.
+    /// The glyph may extend slightly beyond bitmap boundaries (handled correctly by MSDF).
+    /// When false, uses conservative algorithm that keeps glyph fully within bounds.
+    msdfgen_autoframe: bool = false,
+    /// Invert the distance field (swap inside/outside).
+    /// Some fonts have opposite winding order and need this enabled.
+    invert_distances: bool = false,
 };
 
 /// Options for generating a font atlas.
@@ -65,6 +73,9 @@ pub const AtlasOptions = struct {
     /// Apply error correction to fix artifacts on curves and multi-contour glyphs.
     /// Disabled by default to preserve MSDF color diversity for sharp edges.
     error_correction: bool = false,
+    /// Invert the distance field (swap inside/outside).
+    /// Some fonts have opposite winding order and need this enabled.
+    invert_distances: bool = false,
 };
 
 /// Metrics for a rendered glyph.
@@ -157,6 +168,91 @@ pub const MsdfError = error{
     UnsupportedFormat,
 };
 
+/// Detect if a font has inverted winding order (needs distance field inversion).
+///
+/// This checks the winding direction of a test glyph's outer contour. The standard
+/// convention is counter-clockwise for outer contours (positive winding). Some fonts
+/// use clockwise instead, which causes the distance field to be inverted.
+///
+/// Returns true if the font needs `invert_distances = true` for correct rendering.
+pub fn detectInvertedWinding(allocator: std.mem.Allocator, font: Font) bool {
+    // Try several test characters that have clear outer contours
+    const test_chars = [_]u21{ 'O', 'D', 'B', '0' };
+
+    for (test_chars) |codepoint| {
+        const shape = getGlyphShape(allocator, font, codepoint) catch continue;
+        defer {
+            var shape_mut = shape;
+            shape_mut.deinit();
+        }
+
+        if (shape.contours.len == 0) continue;
+
+        // Find the largest contour by bounding box area (likely the outer contour)
+        var largest_idx: usize = 0;
+        var largest_area: f64 = 0;
+        for (shape.contours, 0..) |c, i| {
+            const bounds = c.bounds();
+            const area = bounds.width() * bounds.height();
+            if (area > largest_area) {
+                largest_area = area;
+                largest_idx = i;
+            }
+        }
+
+        // Check winding of the largest contour
+        // Standard convention: outer contours should be counter-clockwise (positive winding)
+        const winding = shape.contours[largest_idx].winding();
+        if (winding < 0) {
+            // Negative winding on outer contour = inverted font
+            return true;
+        } else if (winding > 0) {
+            // Positive winding = normal font
+            return false;
+        }
+        // Zero winding = degenerate contour, try next character
+    }
+
+    // Default to not inverted if we couldn't detect
+    return false;
+}
+
+/// Get the raw shape (contours) for a glyph without generating MSDF.
+/// Useful for analysis and winding detection.
+fn getGlyphShape(allocator: std.mem.Allocator, font: Font, codepoint: u21) MsdfError!contour.Shape {
+    const maxp_data = font.getTableData("maxp") orelse return MsdfError.MissingTable;
+    const maxp = head_maxp.MaxpTable.parse(maxp_data) catch return MsdfError.InvalidMaxpTable;
+
+    const head_data = font.getTableData("head") orelse return MsdfError.MissingTable;
+    const head = head_maxp.HeadTable.parse(head_data) catch return MsdfError.InvalidHeadTable;
+
+    _ = font.getTableData("cmap") orelse return MsdfError.MissingTable;
+    const cmap_table_offset = font.findTable("cmap").?.offset;
+    const cmap_table = cmap.CmapTable.parse(font.data, cmap_table_offset) catch return MsdfError.InvalidCmapTable;
+
+    const glyph_index = cmap_table.getGlyphIndex(codepoint) catch return MsdfError.InvalidCmapTable;
+
+    const is_cff = font.findTable("CFF ") != null;
+
+    if (is_cff) {
+        const cff_table = font.findTable("CFF ").?;
+        return cff.parseGlyph(allocator, font.data, cff_table.offset, glyph_index) catch return MsdfError.InvalidCffTable;
+    } else {
+        const loca_table = font.findTable("loca") orelse return MsdfError.MissingTable;
+        const glyf_table = font.findTable("glyf") orelse return MsdfError.MissingTable;
+
+        return glyf.parseGlyph(
+            allocator,
+            font.data,
+            loca_table.offset,
+            glyf_table.offset,
+            glyph_index,
+            maxp.num_glyphs,
+            head.usesLongLocaFormat(),
+        ) catch return MsdfError.InvalidGlyfTable;
+    }
+}
+
 /// Generate an MSDF texture for a single glyph.
 ///
 /// Parameters:
@@ -229,28 +325,24 @@ pub fn generateGlyph(
 
     // Calculate glyph bounding box
     const shape_bounds = shape.bounds();
-    const units_per_em: f64 = @floatFromInt(head.units_per_em);
 
     // Apply edge coloring for MSDF
     coloring.colorEdgesSimple(&shape);
 
-    // Calculate transform to fit glyph in output size with padding
+    // Calculate transform to fit glyph in output size
     const size = options.size;
-    const padding = options.padding;
+
+    // Choose transform algorithm based on option
+    const transform = if (options.msdfgen_autoframe)
+        // msdfgen's autoframe: glyph may extend beyond bitmap, produces larger glyphs
+        generate.calculateMsdfgenAutoframe(shape_bounds, size, size, options.range)
+    else
+        // Conservative: glyph stays within bitmap with padding
+        generate.calculateTransformWithRange(shape_bounds, size, size, options.range);
 
     // Calculate the distance range in font units
-    // The range in the output should map to options.range pixels
-    const available_size = size - 2 * padding;
-    const scale_factor = @as(f64, @floatFromInt(available_size)) / units_per_em;
-    const range_in_font_units = options.range / scale_factor;
-
-    // Calculate transform
-    const transform = generate.calculateTransform(
-        shape_bounds,
-        size,
-        size,
-        padding,
-    );
+    // Use the actual transform scale (matches msdfgen: range = pxRange / scale)
+    const range_in_font_units = options.range / transform.scale;
 
     // Generate MSDF
     const bitmap = generate.generateMsdf(
@@ -266,6 +358,13 @@ pub fn generateGlyph(
     if (options.error_correction) {
         var bitmap_mut = bitmap;
         generate.correctErrorsWithProtection(&bitmap_mut, shape, transform);
+    }
+
+    // Invert distance field if requested (for fonts with opposite winding order)
+    if (options.invert_distances) {
+        for (bitmap.pixels) |*pixel| {
+            pixel.* = 255 - pixel.*;
+        }
     }
 
     // Calculate metrics (normalized to font units, caller can scale as needed)
@@ -360,6 +459,7 @@ pub fn generateAtlas(
             .size = glyph_size,
             .padding = options.padding,
             .range = options.range,
+            .invert_distances = options.invert_distances,
         }) catch |err| {
             // Skip glyphs that fail to generate (e.g., missing glyphs)
             if (err == MsdfError.GlyphNotFound) {
