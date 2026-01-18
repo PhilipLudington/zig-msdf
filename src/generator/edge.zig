@@ -361,99 +361,134 @@ pub const CubicSegment = struct {
     }
 
     /// Compute the signed distance and closest parameter from a point to this segment.
+    /// Uses msdfgen-compatible algorithm with multiple search starts and Newton refinement.
     pub fn signedDistanceWithParam(self: CubicSegment, origin: Vec2) DistanceResult {
         // For cubic curves, the distance minimization leads to a quintic equation.
-        // We use a combination of subdivision and Newton iteration for robustness.
+        // We use msdfgen's approach: multiple search starts with Newton refinement from each.
 
-        // Sample points along the curve to find approximate minimum
-        const num_samples = 10;
-        var min_t: f64 = 0;
-        var min_dist_sq: f64 = origin.distanceSquared(self.p0);
+        // Precompute polynomial coefficients like msdfgen
+        // qa = p0 - origin, ab = p1 - p0, br = p2 - p1 - ab, as = p3 - p2 - br - ab
+        const qa = self.p0.sub(origin);
+        const ab = self.p1.sub(self.p0);
+        const br = self.p2.sub(self.p1).sub(ab);
+        const as = self.p3.sub(self.p2).sub(br).sub(ab);
 
-        var i: usize = 1;
-        while (i <= num_samples) : (i += 1) {
-            const t = @as(f64, @floatFromInt(i)) / @as(f64, num_samples);
-            const p = self.point(t);
-            const dist_sq = origin.distanceSquared(p);
-            if (dist_sq < min_dist_sq) {
-                min_dist_sq = dist_sq;
-                min_t = t;
-            }
-        }
+        // Track best result
+        var best_t: f64 = 0;
+        var best_dist: f64 = qa.length();
 
-        // Refine using Newton iteration
-        var t = min_t;
-        var iterations: usize = 0;
-        while (iterations < 8) : (iterations += 1) {
-            const p = self.point(t);
-            const d = p.sub(origin);
-            const tangent = self.direction(t);
-
-            // f(t) = d · tangent (derivative of distance squared / 2)
-            const f = d.dot(tangent);
-
-            // f'(t) = tangent · tangent + d · tangent' (second derivative)
-            const tangent_deriv = self.secondDerivative(t);
-            const f_prime = tangent.dot(tangent) + d.dot(tangent_deriv);
-
-            if (@abs(f_prime) < 1e-14) break;
-
-            const delta = f / f_prime;
-            t = std.math.clamp(t - delta, 0.0, 1.0);
-
-            if (@abs(delta) < 1e-10) break;
-        }
-
-        // Also check endpoints
-        var best_t = t;
-        var best_dist_sq = origin.distanceSquared(self.point(t));
-
-        const dist_0 = origin.distanceSquared(self.p0);
-        if (dist_0 < best_dist_sq) {
-            best_dist_sq = dist_0;
-            best_t = 0;
-        }
-
-        const dist_1 = origin.distanceSquared(self.p3);
-        if (dist_1 < best_dist_sq) {
-            best_dist_sq = dist_1;
+        // Check endpoint at t=1
+        const end_dist = self.p3.sub(origin).length();
+        if (end_dist < best_dist) {
+            best_dist = end_dist;
             best_t = 1;
         }
 
+        // Search with multiple starting points (msdfgen uses MSDFGEN_CUBIC_SEARCH_STARTS, typically 4-8)
+        const search_starts: usize = 8;
+        const search_steps: usize = 4;
+
+        var i: usize = 0;
+        while (i <= search_starts) : (i += 1) {
+            var t = @as(f64, @floatFromInt(i)) / @as(f64, search_starts);
+
+            // Compute qe = point(t) - origin using polynomial form
+            // qe = qa + 3*t*ab + 3*t²*br + t³*as
+            const t2 = t * t;
+            const t3 = t2 * t;
+            var qe = qa.add(ab.scale(3 * t)).add(br.scale(3 * t2)).add(as.scale(t3));
+
+            // d1 = first derivative of qe = 3*ab + 6*t*br + 3*t²*as
+            var d1 = ab.scale(3).add(br.scale(6 * t)).add(as.scale(3 * t2));
+
+            // d2 = second derivative = 6*br + 6*t*as
+            var d2 = br.scale(6).add(as.scale(6 * t));
+
+            // Newton step: t_new = t - dot(qe, d1) / (dot(d1, d1) + dot(qe, d2))
+            const denom = d1.dot(d1) + qe.dot(d2);
+            if (@abs(denom) < 1e-14) continue;
+
+            var improved_t = t - qe.dot(d1) / denom;
+
+            // Iterate if improved_t is valid (in (0,1))
+            if (improved_t > 0 and improved_t < 1) {
+                var remaining_steps: usize = search_steps;
+                while (remaining_steps > 0) : (remaining_steps -= 1) {
+                    t = improved_t;
+                    const t2_new = t * t;
+                    const t3_new = t2_new * t;
+
+                    qe = qa.add(ab.scale(3 * t)).add(br.scale(3 * t2_new)).add(as.scale(t3_new));
+                    d1 = ab.scale(3).add(br.scale(6 * t)).add(as.scale(3 * t2_new));
+                    d2 = br.scale(6).add(as.scale(6 * t));
+
+                    const denom_new = d1.dot(d1) + qe.dot(d2);
+                    if (@abs(denom_new) < 1e-14) break;
+
+                    improved_t = t - qe.dot(d1) / denom_new;
+
+                    if (improved_t <= 0 or improved_t >= 1) break;
+                }
+
+                // Check distance at converged t
+                const dist = qe.length();
+                if (dist < best_dist) {
+                    best_dist = dist;
+                    best_t = t;
+                }
+            }
+        }
+
+        // Ensure endpoints are checked with actual squared distance calculation
+        var final_best_t = best_t;
+        var final_best_dist_sq = best_dist * best_dist;
+
+        const dist_0_sq = origin.distanceSquared(self.p0);
+        if (dist_0_sq < final_best_dist_sq) {
+            final_best_dist_sq = dist_0_sq;
+            final_best_t = 0;
+        }
+
+        const dist_1_sq = origin.distanceSquared(self.p3);
+        if (dist_1_sq < final_best_dist_sq) {
+            final_best_dist_sq = dist_1_sq;
+            final_best_t = 1;
+        }
+
         // Compute final signed distance
-        const closest = self.point(best_t);
+        const closest = self.point(final_best_t);
         const qp = closest.sub(origin); // point - origin
-        const dist = @sqrt(best_dist_sq);
+        const final_dist = @sqrt(final_best_dist_sq);
 
         // Determine sign using cross product - matches msdfgen exactly
         // msdfgen uses different vectors for endpoints vs interior:
         // - t=0: cross(p1-p0, p0-origin)
         // - t=1: cross(p3-p2, p3-origin)
         // - interior: cross(direction(t), point(t)-origin)
-        const cross_val = if (best_t <= 0.0) blk: {
+        const cross_val = if (final_best_t <= 0.0) blk: {
             // Start point: use first control leg
-            const ab = self.p1.sub(self.p0);
-            const qa = self.p0.sub(origin);
-            break :blk ab.cross(qa);
-        } else if (best_t >= 1.0) blk: {
+            const ab_cross = self.p1.sub(self.p0);
+            const qa_cross = self.p0.sub(origin);
+            break :blk ab_cross.cross(qa_cross);
+        } else if (final_best_t >= 1.0) blk: {
             // End point: use last control leg
             const cd = self.p3.sub(self.p2);
             const qd = self.p3.sub(origin);
             break :blk cd.cross(qd);
         } else blk: {
             // Interior: use actual tangent
-            const tangent = self.direction(best_t);
-            break :blk tangent.cross(qp);
+            const tangent_cross = self.direction(final_best_t);
+            break :blk tangent_cross.cross(qp);
         };
 
         const sign: f64 = if (cross_val >= 0) 1.0 else -1.0;
 
         // Orthogonality = |dot(tangent, approach_dir)|
         // 0 = perpendicular (best), 1 = parallel (worst)
-        const tangent = self.direction(best_t);
-        const ortho = if (dist == 0) 0.0 else @abs(tangent.normalize().dot(qp.normalize()));
+        const tangent = self.direction(final_best_t);
+        const ortho = if (final_dist == 0) 0.0 else @abs(tangent.normalize().dot(qp.normalize()));
 
-        return DistanceResult.init(SignedDistance.init(sign * dist, ortho), best_t);
+        return DistanceResult.init(SignedDistance.init(sign * final_dist, ortho), final_best_t);
     }
 
     /// Get the second derivative of the curve at parameter t.
@@ -953,7 +988,7 @@ fn cubeRoot(x: f64) f64 {
 /// meeting at a corner will have different pseudo-distances based on their
 /// respective tangent directions.
 ///
-/// Algorithm (based on msdfgen):
+/// Algorithm (matching msdfgen's distanceToPerpendicularDistance):
 /// - If param < 0: extend tangent at t=0 backward
 ///   - If point is "behind" the start (dot < 0), use perpendicular distance
 /// - If param > 1: extend tangent at t=1 forward

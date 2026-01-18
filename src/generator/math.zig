@@ -146,16 +146,14 @@ pub const SignedDistance = struct {
     /// - 1 = parallel/glancing approach (worst)
     ///
     /// This matches msdfgen's SignedDistance::operator< which prefers lower dot values.
+    /// Uses exact equality comparison like msdfgen for the tiebreaker.
     pub fn lessThan(self: SignedDistance, other: SignedDistance) bool {
         const abs_self = @abs(self.distance);
         const abs_other = @abs(other.distance);
-        // Prefer the closer distance, or if equal, the LOWER orthogonality
+        // Prefer the closer distance, or if exactly equal, the LOWER orthogonality
         // (lower = more perpendicular approach = sharper corners)
-        // Use epsilon comparison to avoid floating-point instability at boundaries
-        // Use a larger epsilon (1e-10) to handle accumulated numerical errors
-        const epsilon: f64 = 1e-10;
-        const diff = abs_self - abs_other;
-        if (@abs(diff) > epsilon) {
+        // msdfgen uses exact equality: fabs(a.distance) == fabs(b.distance)
+        if (abs_self != abs_other) {
             return abs_self < abs_other;
         }
         return self.orthogonality < other.orthogonality;

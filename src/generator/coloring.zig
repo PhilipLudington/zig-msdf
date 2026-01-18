@@ -31,15 +31,9 @@ const corner_angle_threshold = 3.0; // msdfgen default
 
 /// Color edges in a shape for MSDF generation.
 /// This assigns colors to edges so that corners are preserved.
-/// First splits cubic edges at inflection points for proper S-curve handling.
+/// Note: Unlike some implementations, we do NOT split at inflection points
+/// to match msdfgen's behavior exactly.
 pub fn colorEdges(shape: *Shape, angle_threshold: f64) void {
-    // Split edges at inflection points before coloring
-    // This ensures S-curves and similar shapes get proper color boundaries
-    shape.splitAtInflections() catch {
-        // If splitting fails (allocation error), continue with original edges
-        // The coloring will be suboptimal but still functional
-    };
-
     for (shape.contours) |*contour| {
         colorContour(contour, angle_threshold);
     }
@@ -51,7 +45,6 @@ pub fn colorEdgesSimple(shape: *Shape) void {
 }
 
 /// Color edges in a single contour.
-/// Edges are assumed to already be split at inflection points (for cubics).
 /// Uses msdfgen's corner detection: dot <= 0 OR |cross| > sin(angleThreshold).
 fn colorContour(contour: *Contour, angle_threshold: f64) void {
     const edge_count = contour.edges.len;
