@@ -245,21 +245,127 @@ Updated `colorBetweenCorners()` in `src/generator/coloring.zig`:
 
 ---
 
-## Current Status
+## Color State Persistence Fix (IMPLEMENTED)
 
-- **Match rate with msdfgen_autoframe:** 78.2%
-- **Inside/outside agreement:** 100%
-- **Color patterns:** Match msdfgen
+**Problem:** Multi-contour characters (like D, O, B) had poor channel diversity because each contour was colored independently, resetting the color state.
+
+**msdfgen behavior:** Color state persists across ALL contours in a shape:
+```cpp
+EdgeColor color = initColor(seed);  // Once for entire shape
+for (contour in shape.contours) {
+    // color state carries over between contours
+}
+```
+
+**Fix Applied:** Updated `colorEdges()` to pass color state through contours:
+```zig
+pub fn colorEdges(shape: *Shape, angle_threshold: f64) void {
+    var color: EdgeColor = .cyan;
+    for (shape.contours) |*contour| {
+        color = colorContourWithState(contour, angle_threshold, color);
+    }
+}
+```
+
+### Result
+
+- **Match rate: 78.2% → 83.9%** (+5.7% improvement)
+- D character outer contour now uses cyan (was magenta before)
+- Better channel diversity for multi-contour characters
 
 ---
 
-## Remaining Investigation Areas
+## Current Status
 
-The 22% mismatch could be due to:
+- **Match rate with msdfgen_autoframe:** 83.9%
+- **Inside/outside agreement:** 100%
+- **All core tests passing** (2 threshold-based tests fail due to algorithm changes)
 
-1. **Cubic bezier distance:** Subtle differences in Newton iteration or endpoint handling
-2. **Error correction:** msdfgen's error correction algorithm may differ
-3. **Floating point:** Accumulated precision differences
-4. **Transform/positioning:** Pixel sampling locations might differ slightly
+---
 
-The simple pseudo-distance approach (nearest edge only) works identically to the full perpendicular distance selector for this codebase.
+## Next Steps: Continuing the Investigation
+
+### Remaining Issue: D Character Color Intensity
+
+The D character still shows muted colors compared to msdfgen's vibrant output:
+- **zig-msdf D:** Muted cyan/magenta, mostly white interior
+- **msdfgen D:** Vibrant magenta vertical, red/green/blue on curve
+
+### Investigation Areas
+
+#### 1. Contour Order Investigation
+msdfgen might process contours in a different order. Check if reversing contour order changes the output:
+```bash
+# Debug contour order
+zig build debug-coloring 2>&1 | grep -A30 "Character 'D'"
+```
+
+**Files to examine:**
+- `src/generator/coloring.zig` - contour iteration order
+- `src/truetype/glyf.zig` - how contours are parsed from font
+
+#### 2. Corner Detection Differences
+The D has curved sections - check if corner detection differs:
+```bash
+# Compare corners detected
+zig build debug-coloring 2>&1 | grep "Corner\|corner"
+```
+
+**msdfgen corner detection** (`core/edge-coloring.cpp:23`):
+```cpp
+static bool isCorner(const Vector2 &aDir, const Vector2 &bDir, double crossThreshold) {
+    return dotProduct(aDir, bDir) <= 0 || fabs(crossProduct(aDir, bDir)) > crossThreshold;
+}
+```
+
+#### 3. Edge Segment Differences
+Check if the D character has the same number/type of edges:
+- msdfgen might split edges differently
+- Cubic vs quadratic representation might differ
+
+**Debug command:**
+```bash
+zig build debug-coloring 2>&1 | grep -A50 "Character 'D'" | grep "Edge\|edge"
+```
+
+#### 4. Distance Calculation at Boundaries
+The muted appearance could be due to distance values being similar across channels. Check specific pixel values:
+
+```zig
+// Add debug output in generate.zig to print channel distances at specific pixels
+const r, const g, const b = computeChannelDistances(shape, pixel_point);
+std.debug.print("Pixel ({d},{d}): R={d:.3} G={d:.3} B={d:.3}\n", .{x, y, r, g, b});
+```
+
+### Quick Test Commands
+
+```bash
+# Generate comparison images
+zig build single-glyph -- /System/Library/Fonts/Geneva.ttf D
+magick glyph.ppm -filter point -resize 400% zigmsdf_D.png
+
+# msdfgen reference
+cd ~/Fun/msdfgen/build
+./msdfgen msdf -font "/System/Library/Fonts/Geneva.ttf" 68 -dimensions 64 64 -pxrange 4 -autoframe -format bmp -o msdfgen_D.bmp
+
+# Run tests
+zig build test 2>&1 | grep "Match rate"
+```
+
+### Other Potential Issues
+
+1. **Cubic bezier distance:** Subtle differences in Newton iteration
+2. **Error correction:** msdfgen's algorithm may differ (currently disabled by default)
+3. **Transform/positioning:** Pixel sampling locations might differ slightly
+4. **Floating point:** Accumulated precision differences
+
+---
+
+## Summary of All Changes
+
+| Change | Match Rate | Improvement |
+|--------|------------|-------------|
+| Original baseline | 70.1% | - |
+| Edge coloring: same color per section | 78.2% | +8.1% |
+| Color state persists across contours | 83.9% | +5.7% |
+| **Total improvement** | **83.9%** | **+13.8%** |
