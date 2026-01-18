@@ -730,4 +730,27 @@ pub fn build(b: *std.Build) void {
 
     const check_polarity_step = b.step("check-polarity", "Check MSDF polarity");
     check_polarity_step.dependOn(&run_check_polarity.step);
+
+    // CFF orientation debug tool
+    const cff_orient_debug_exe = b.addExecutable(.{
+        .name = "cff_orient_debug",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/cff_orientation_debug.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(cff_orient_debug_exe);
+
+    const run_cff_orient_debug = b.addRunArtifact(cff_orient_debug_exe);
+    run_cff_orient_debug.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_cff_orient_debug.addArgs(args);
+    }
+
+    const cff_orient_debug_step = b.step("cff-orient-debug", "Debug CFF font contour orientation");
+    cff_orient_debug_step.dependOn(&run_cff_orient_debug.step);
 }

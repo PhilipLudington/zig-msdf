@@ -927,6 +927,66 @@ Both `computeContourChannelDistances` and `computeChannelDistancesSingleContour`
 - `src/generator/generate.zig` - getNeighborContext, updated distance computation functions
 - `tests/sdf_properties_test.zig` - Adjusted median jump threshold (50 → 70)
 
+## CFF Font Filled Holes Bug (January 2026)
+
+**Status:** FIXED
+
+### Problem
+
+CFF/OpenType fonts (like JetBrains Mono) displayed glyphs with filled-in counters (holes). Characters like A, B, D, O, P, Q, R had their interior holes rendered as solid instead of hollow.
+
+### Root Cause
+
+In the CFF CharString interpreter (`src/cff/charstring.zig`), the `finishContour()` function was incorrectly updating the current drawing position when closing a contour.
+
+When a contour is closed with an implicit line back to the start:
+- **Old behavior:** Position was updated to the start point of the closed contour
+- **Correct behavior:** Position should remain at the pre-close point
+
+Per the Type 2 CharString spec, when a `moveto` operator is encountered, it first closes any open path, then moves relative to the **current point before closing**, not the closed position.
+
+### Example (JetBrains Mono 'B')
+
+Before fix:
+```
+Contour 0 (outer): Y from 0 to 730
+After close, position reset to (93, 0)
+rmoveto delta (88, -311) → position (181, -311) ← WRONG (outside glyph!)
+Contour 1 (hole): Y from -311 to -81 ← Below baseline!
+```
+
+After fix:
+```
+Contour 0 (outer): Y from 0 to 730
+After close, position stays at (93, 730) ← Top of glyph
+rmoveto delta (88, -311) → position (181, 419) ← CORRECT (inside glyph!)
+Contour 1 (hole): Y from 419 to 649 ← Inside outer contour!
+```
+
+### The Fix
+
+In `finishContour()`, when adding the closing line segment, do NOT update `self.x` and `self.y`:
+
+```zig
+// Add closing line segment directly without updating position
+const segment = LinearSegment.init(
+    Vec2.init(self.x, self.y),
+    Vec2.init(self.contour_start_x, self.contour_start_y),
+);
+self.current_edges.append(self.allocator, .{ .linear = segment }) catch return CharStringError.OutOfMemory;
+// DO NOT update self.x and self.y - keep them at the pre-close position
+```
+
+### Files Modified
+
+- `src/cff/charstring.zig` - `finishContour()` now preserves position when closing
+
+### Testing
+
+Added debug tool: `zig build cff-orient-debug -- <font.otf> [character]`
+
+This tool shows contour coordinates before and after `orientContours()` to help diagnose CFF font issues.
+
 ## References
 
 - [msdfgen by Viktor Chlumsky](https://github.com/Chlumsky/msdfgen) - Reference implementation

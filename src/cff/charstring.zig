@@ -726,9 +726,18 @@ pub const Interpreter = struct {
         if (self.current_edges.items.len == 0) return;
 
         // Close the contour if not already closed
+        // IMPORTANT: Per Type 2 CharString spec, the closing line is added but the
+        // current drawing position is NOT updated. The next moveto's delta is relative
+        // to the position BEFORE the implicit close, not after.
         const eps = 0.001;
         if (@abs(self.x - self.contour_start_x) > eps or @abs(self.y - self.contour_start_y) > eps) {
-            try self.lineTo(self.contour_start_x, self.contour_start_y);
+            // Add closing line segment directly without updating position
+            const segment = LinearSegment.init(
+                Vec2.init(self.x, self.y),
+                Vec2.init(self.contour_start_x, self.contour_start_y),
+            );
+            self.current_edges.append(self.allocator, .{ .linear = segment }) catch return CharStringError.OutOfMemory;
+            // DO NOT update self.x and self.y - keep them at the pre-close position
         }
 
         // Create contour from edges
