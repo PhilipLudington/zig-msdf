@@ -24,8 +24,10 @@ const Contour = contour_mod.Contour;
 const Shape = contour_mod.Shape;
 
 /// Threshold angle (in radians) for detecting corners.
-/// Edges meeting at an angle greater than this are considered corners.
-const corner_angle_threshold = std.math.pi / 3.0; // 60 degrees
+/// This value is used to compute a cross-product threshold via sin(angle).
+/// msdfgen default is 3.0 radians (~172 degrees), which gives sin(3.0) ≈ 0.14.
+/// This means any angle change > ~8 degrees is considered a corner.
+const corner_angle_threshold = 3.0; // msdfgen default
 
 /// Color edges in a shape for MSDF generation.
 /// This assigns colors to edges so that corners are preserved.
@@ -50,7 +52,7 @@ pub fn colorEdgesSimple(shape: *Shape) void {
 
 /// Color edges in a single contour.
 /// Edges are assumed to already be split at inflection points (for cubics).
-/// Also detects curvature sign changes between adjacent quadratic segments.
+/// Uses msdfgen's corner detection: dot <= 0 OR |cross| > sin(angleThreshold).
 fn colorContour(contour: *Contour, angle_threshold: f64) void {
     const edge_count = contour.edges.len;
     if (edge_count == 0) return;
@@ -68,9 +70,9 @@ fn colorContour(contour: *Contour, angle_threshold: f64) void {
         return;
     }
 
-    // Find color boundaries:
-    // 1. Corners (sharp direction changes between edges)
-    // 2. Curvature sign reversals (for smooth S-curves made of quadratics)
+    // Find corners using msdfgen's detection method
+    // Corner if: dot(a,b) <= 0 OR |cross(a,b)| > crossThreshold
+    const cross_threshold = @sin(angle_threshold);
     var corners_buffer: [256]usize = undefined;
     var corners_len: usize = 0;
 
@@ -84,13 +86,11 @@ fn colorContour(contour: *Contour, angle_threshold: f64) void {
         const prev_dir = prev_edge.direction(1.0).normalize();
         const curr_dir = curr_edge.direction(0.0).normalize();
 
-        // Calculate angle between directions
-        const angle = angleBetween(prev_dir, curr_dir);
+        // msdfgen corner detection: dot <= 0 OR |cross| > crossThreshold
+        const dot = prev_dir.dot(curr_dir);
+        const cross = prev_dir.cross(curr_dir);
 
-        // Check for corner (sharp direction change)
-        // Only direction changes are used as color boundaries - curvature reversals
-        // on smooth curves should NOT trigger color changes as that causes artifacts
-        if (angle > angle_threshold) {
+        if (dot <= 0 or @abs(cross) > cross_threshold) {
             if (corners_len < corners_buffer.len) {
                 corners_buffer[corners_len] = i;
                 corners_len += 1;
@@ -213,9 +213,12 @@ fn colorBetweenCorners(contour: *Contour, corners: []const usize) void {
 }
 
 /// Detect if a junction between two edges forms a corner.
+/// Uses msdfgen's method: dot <= 0 OR |cross| > sin(threshold).
 pub fn isCorner(prev_dir: Vec2, curr_dir: Vec2, threshold: f64) bool {
-    const angle = angleBetween(prev_dir.normalize(), curr_dir.normalize());
-    return angle > threshold;
+    const a = prev_dir.normalize();
+    const b = curr_dir.normalize();
+    const cross_threshold = @sin(threshold);
+    return a.dot(b) <= 0 or @abs(a.cross(b)) > cross_threshold;
 }
 
 /// Get the default corner angle threshold.

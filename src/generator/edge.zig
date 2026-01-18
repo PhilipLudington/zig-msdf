@@ -740,7 +740,203 @@ pub const EdgeSegment = union(enum) {
             .linear => 0,
         };
     }
+
+    /// Reverse the direction of this edge segment.
+    /// This swaps the start and end points while preserving the shape.
+    pub fn reverse(self: EdgeSegment) EdgeSegment {
+        return switch (self) {
+            .linear => |s| EdgeSegment{
+                .linear = .{
+                    .p0 = s.p1,
+                    .p1 = s.p0,
+                    .color = s.color,
+                },
+            },
+            .quadratic => |s| EdgeSegment{
+                .quadratic = .{
+                    .p0 = s.p2,
+                    .p1 = s.p1, // control point stays
+                    .p2 = s.p0,
+                    .color = s.color,
+                },
+            },
+            .cubic => |s| EdgeSegment{
+                .cubic = .{
+                    .p0 = s.p3,
+                    .p1 = s.p2, // swap control points
+                    .p2 = s.p1,
+                    .p3 = s.p0,
+                    .color = s.color,
+                },
+            },
+        };
+    }
+
+    /// Find scanline intersections with this edge at a given Y coordinate.
+    /// Returns the X coordinates and Y-direction (+1 or -1) of each intersection.
+    /// Returns the number of intersections found (0-3).
+    pub fn scanlineIntersections(self: EdgeSegment, y: f64, x_out: *[3]f64, dy_out: *[3]i32) u32 {
+        return switch (self) {
+            .linear => |s| scanlineLinear(s, y, x_out, dy_out),
+            .quadratic => |s| scanlineQuadratic(s, y, x_out, dy_out),
+            .cubic => |s| scanlineCubic(s, y, x_out, dy_out),
+        };
+    }
 };
+
+/// Scanline intersection for linear segment.
+fn scanlineLinear(s: LinearSegment, y: f64, x_out: *[3]f64, dy_out: *[3]i32) u32 {
+    // Check if scanline crosses the edge
+    if ((s.p0.y >= y and s.p1.y < y) or (s.p0.y < y and s.p1.y >= y)) {
+        // Linear interpolation to find X at the intersection
+        const t = (y - s.p0.y) / (s.p1.y - s.p0.y);
+        x_out[0] = s.p0.x + t * (s.p1.x - s.p0.x);
+        // Direction: positive if going up, negative if going down
+        dy_out[0] = if (s.p1.y > s.p0.y) @as(i32, 1) else @as(i32, -1);
+        return 1;
+    }
+    return 0;
+}
+
+/// Scanline intersection for quadratic bezier.
+fn scanlineQuadratic(s: QuadraticSegment, y: f64, x_out: *[3]f64, dy_out: *[3]i32) u32 {
+    // Solve: (1-t)^2*p0.y + 2*(1-t)*t*p1.y + t^2*p2.y = y
+    // This is a quadratic in t: at^2 + bt + c = 0
+    const a = s.p0.y - 2 * s.p1.y + s.p2.y;
+    const b = 2 * (s.p1.y - s.p0.y);
+    const c = s.p0.y - y;
+
+    var count: u32 = 0;
+    var roots: [2]f64 = undefined;
+    var root_count: u32 = 0;
+
+    if (@abs(a) < 1e-14) {
+        // Linear case
+        if (@abs(b) > 1e-14) {
+            roots[0] = -c / b;
+            root_count = 1;
+        }
+    } else {
+        // Quadratic formula
+        const discriminant = b * b - 4 * a * c;
+        if (discriminant >= 0) {
+            const sqrt_d = @sqrt(discriminant);
+            const inv_2a = 1.0 / (2.0 * a);
+            roots[0] = (-b - sqrt_d) * inv_2a;
+            roots[1] = (-b + sqrt_d) * inv_2a;
+            root_count = 2;
+        }
+    }
+
+    for (0..root_count) |i| {
+        const t = roots[i];
+        if (t > 0 and t < 1) {
+            x_out[count] = s.point(t).x;
+            // Direction is sign of derivative at t
+            const dir_y = s.direction(t).y;
+            dy_out[count] = if (dir_y > 0) @as(i32, 1) else if (dir_y < 0) @as(i32, -1) else @as(i32, 0);
+            count += 1;
+        }
+    }
+    return count;
+}
+
+/// Scanline intersection for cubic bezier.
+fn scanlineCubic(s: CubicSegment, y: f64, x_out: *[3]f64, dy_out: *[3]i32) u32 {
+    // Solve: cubic bezier y-coordinate = y
+    // Using Cardano's formula for cubic roots
+    const p0 = s.p0.y - y;
+    const p1 = s.p1.y - y;
+    const p2 = s.p2.y - y;
+    const p3 = s.p3.y - y;
+
+    // Cubic coefficients: at^3 + bt^2 + ct + d = 0
+    const a = -p0 + 3 * p1 - 3 * p2 + p3;
+    const b = 3 * p0 - 6 * p1 + 3 * p2;
+    const c = -3 * p0 + 3 * p1;
+    const d = p0;
+
+    var count: u32 = 0;
+    var roots: [3]f64 = undefined;
+    const root_count = solveCubic(&roots, a, b, c, d);
+
+    for (0..root_count) |i| {
+        const t = roots[i];
+        if (t > 0 and t < 1) {
+            x_out[count] = s.point(t).x;
+            // Direction is sign of derivative at t
+            const dir_y = s.direction(t).y;
+            dy_out[count] = if (dir_y > 0) @as(i32, 1) else if (dir_y < 0) @as(i32, -1) else @as(i32, 0);
+            count += 1;
+        }
+    }
+    return count;
+}
+
+/// Solve cubic equation ax^3 + bx^2 + cx + d = 0
+/// Returns number of real roots and fills roots array
+fn solveCubic(roots: *[3]f64, a: f64, b: f64, c: f64, d: f64) u32 {
+    const epsilon = 1e-14;
+
+    // Handle degenerate cases
+    if (@abs(a) < epsilon) {
+        // Quadratic
+        if (@abs(b) < epsilon) {
+            // Linear
+            if (@abs(c) < epsilon) {
+                return 0;
+            }
+            roots[0] = -d / c;
+            return 1;
+        }
+        const disc = c * c - 4 * b * d;
+        if (disc < 0) return 0;
+        const sqrt_disc = @sqrt(disc);
+        const inv_2b = 1.0 / (2.0 * b);
+        roots[0] = (-c - sqrt_disc) * inv_2b;
+        roots[1] = (-c + sqrt_disc) * inv_2b;
+        return 2;
+    }
+
+    // Normalize to t^3 + pt + q = 0 (Cardano's form)
+    const p = (3 * a * c - b * b) / (3 * a * a);
+    const q = (2 * b * b * b - 9 * a * b * c + 27 * a * a * d) / (27 * a * a * a);
+    const offset = -b / (3 * a);
+
+    const disc = q * q / 4 + p * p * p / 27;
+
+    if (disc > epsilon) {
+        // One real root
+        const sqrt_disc = @sqrt(disc);
+        const u = cubeRoot(-q / 2 + sqrt_disc);
+        const v = cubeRoot(-q / 2 - sqrt_disc);
+        roots[0] = u + v + offset;
+        return 1;
+    } else if (disc < -epsilon) {
+        // Three real roots (casus irreducibilis)
+        const r = @sqrt(-p * p * p / 27);
+        const phi = std.math.acos(-q / (2 * r));
+        const cube_r = cubeRoot(r);
+        roots[0] = 2 * cube_r * @cos(phi / 3) + offset;
+        roots[1] = 2 * cube_r * @cos((phi + 2 * std.math.pi) / 3) + offset;
+        roots[2] = 2 * cube_r * @cos((phi + 4 * std.math.pi) / 3) + offset;
+        return 3;
+    } else {
+        // Double or triple root
+        const u = cubeRoot(-q / 2);
+        roots[0] = 2 * u + offset;
+        roots[1] = -u + offset;
+        return 2;
+    }
+}
+
+fn cubeRoot(x: f64) f64 {
+    if (x >= 0) {
+        return std.math.pow(f64, x, 1.0 / 3.0);
+    } else {
+        return -std.math.pow(f64, -x, 1.0 / 3.0);
+    }
+}
 
 /// Convert a true signed distance to pseudo-distance.
 ///

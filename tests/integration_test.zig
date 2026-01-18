@@ -104,7 +104,7 @@ test "generateMsdf produces correct dimensions" {
     const transform = msdf.generate.calculateTransform(bounds, 64, 64, 4);
 
     // Generate MSDF
-    var bitmap = try msdf.generate.generateMsdf(allocator, shape, 64, 64, 8.0, transform);
+    var bitmap = try msdf.generate.generateMsdf(allocator, shape, 64, 64, 8.0, transform, .{});
     defer bitmap.deinit();
 
     // Verify output dimensions
@@ -128,7 +128,7 @@ test "generateMsdf with empty shape returns valid bitmap" {
         .translate = Vec2.zero,
     };
 
-    var bitmap = try msdf.generate.generateMsdf(allocator, shape, 32, 32, 4.0, transform);
+    var bitmap = try msdf.generate.generateMsdf(allocator, shape, 32, 32, 4.0, transform, .{});
     defer bitmap.deinit();
 
     // Should still produce valid output
@@ -196,7 +196,8 @@ test "calculateTransform centers shape in output" {
     // Calculate transform for 64x64 output with 4px padding
     const transform = msdf.generate.calculateTransform(bounds, 64, 64, 4);
 
-    // Scale should map 100 units to 56 pixels (64 - 2*4)
+    // Available space = 64 - 2*4 = 56x56
+    // Shape is 100x100, so scale = 56/100 = 0.56
     try std.testing.expectApproxEqAbs(@as(f64, 0.56), transform.scale, 0.01);
 }
 
@@ -207,8 +208,7 @@ test "calculateTransform handles non-square shapes" {
     // Calculate transform for 64x64 output with 4px padding
     const transform = msdf.generate.calculateTransform(bounds, 64, 64, 4);
 
-    // Scale should be based on the larger dimension (width = 200)
-    // Available space is 56x56 pixels, so scale = 56/200 = 0.28
+    // Available space = 56x56, width-limited: scale = min(56/200, 56/100) = 0.28
     try std.testing.expectApproxEqAbs(@as(f64, 0.28), transform.scale, 0.01);
 }
 
@@ -299,7 +299,7 @@ test "full pipeline: shape to colored MSDF" {
     const transform = msdf.generate.calculateTransform(bounds, 64, 64, 4);
 
     // Generate MSDF
-    var bitmap = try msdf.generate.generateMsdf(allocator, shape, 64, 64, 8.0, transform);
+    var bitmap = try msdf.generate.generateMsdf(allocator, shape, 64, 64, 8.0, transform, .{});
     defer bitmap.deinit();
 
     // Verify output

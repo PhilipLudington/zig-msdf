@@ -168,52 +168,20 @@ pub const MsdfError = error{
     UnsupportedFormat,
 };
 
-/// Detect if a font has inverted winding order (needs distance field inversion).
+/// Detect if a font has inverted winding order.
 ///
-/// This checks the winding direction of a test glyph's outer contour. The standard
-/// convention is counter-clockwise for outer contours (positive winding). Some fonts
-/// use clockwise instead, which causes the distance field to be inverted.
+/// DEPRECATED: The MSDF generation pipeline now calls `orientContours()` which
+/// automatically normalizes all contours to standard winding (CCW outer, CW holes).
+/// As a result, `invert_distances` is no longer needed and this function always
+/// returns false.
 ///
-/// Returns true if the font needs `invert_distances = true` for correct rendering.
+/// This function is kept for backwards compatibility. If you're seeing inverted
+/// output, the issue is likely in your shader or rendering code, not the font.
 pub fn detectInvertedWinding(allocator: std.mem.Allocator, font: Font) bool {
-    // Try several test characters that have clear outer contours
-    const test_chars = [_]u21{ 'O', 'D', 'B', '0' };
-
-    for (test_chars) |codepoint| {
-        const shape = getGlyphShape(allocator, font, codepoint) catch continue;
-        defer {
-            var shape_mut = shape;
-            shape_mut.deinit();
-        }
-
-        if (shape.contours.len == 0) continue;
-
-        // Find the largest contour by bounding box area (likely the outer contour)
-        var largest_idx: usize = 0;
-        var largest_area: f64 = 0;
-        for (shape.contours, 0..) |c, i| {
-            const bounds = c.bounds();
-            const area = bounds.width() * bounds.height();
-            if (area > largest_area) {
-                largest_area = area;
-                largest_idx = i;
-            }
-        }
-
-        // Check winding of the largest contour
-        // Standard convention: outer contours should be counter-clockwise (positive winding)
-        const winding = shape.contours[largest_idx].winding();
-        if (winding < 0) {
-            // Negative winding on outer contour = inverted font
-            return true;
-        } else if (winding > 0) {
-            // Positive winding = normal font
-            return false;
-        }
-        // Zero winding = degenerate contour, try next character
-    }
-
-    // Default to not inverted if we couldn't detect
+    // orientContours() normalizes all fonts to standard winding, so no font
+    // should need invert_distances anymore.
+    _ = allocator;
+    _ = font;
     return false;
 }
 
@@ -319,6 +287,10 @@ pub fn generateGlyph(
     }
     defer shape.deinit();
 
+    // Orient contours to standard winding (CCW outer, CW holes)
+    // This fixes fonts with inconsistent or inverted winding like SF Mono
+    shape.orientContours();
+
     // Get glyph metrics
     const advance_width = hmtx.getAdvanceWidth(glyph_index) catch return MsdfError.InvalidHmtxTable;
     const left_side_bearing = hmtx.getLeftSideBearing(glyph_index) catch return MsdfError.InvalidHmtxTable;
@@ -344,7 +316,7 @@ pub fn generateGlyph(
     // Use the actual transform scale (matches msdfgen: range = pxRange / scale)
     const range_in_font_units = options.range / transform.scale;
 
-    // Generate MSDF
+    // Generate MSDF (pass invert_distances to handle fonts with CW outer contours)
     const bitmap = generate.generateMsdf(
         allocator,
         shape,
@@ -352,19 +324,13 @@ pub fn generateGlyph(
         size,
         range_in_font_units,
         transform,
+        .{ .invert_distances = options.invert_distances },
     ) catch return MsdfError.OutOfMemory;
 
     // Apply error correction if enabled
     if (options.error_correction) {
         var bitmap_mut = bitmap;
         generate.correctErrorsWithProtection(&bitmap_mut, shape, transform);
-    }
-
-    // Invert distance field if requested (for fonts with opposite winding order)
-    if (options.invert_distances) {
-        for (bitmap.pixels) |*pixel| {
-            pixel.* = 255 - pixel.*;
-        }
     }
 
     // Calculate metrics (normalized to font units, caller can scale as needed)

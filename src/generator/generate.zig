@@ -54,10 +54,19 @@ pub const Transform = struct {
     scale: f64,
     /// Translation applied after scaling (in shape units before scaling).
     translate: Vec2,
+    /// If true, don't flip Y when storing to bitmap (matches msdfgen's coordinate system).
+    /// msdfgen stores bitmaps with row 0 at bottom (shape Y coordinates).
+    /// Default is false (flip Y so row 0 is at top, standard image coordinates).
+    msdfgen_compat: bool = false,
 
     /// Create a transform from scale and translation.
     pub fn init(scale: f64, translate: Vec2) Transform {
-        return .{ .scale = scale, .translate = translate };
+        return .{ .scale = scale, .translate = translate, .msdfgen_compat = false };
+    }
+
+    /// Create a transform with msdfgen-compatible Y axis (no flip at storage).
+    pub fn initMsdfgenCompat(scale: f64, translate: Vec2) Transform {
+        return .{ .scale = scale, .translate = translate, .msdfgen_compat = true };
     }
 
     /// Transform a pixel coordinate to shape coordinate (world space).
@@ -169,6 +178,13 @@ pub fn pixelToDistance(pixel: u8, range: f64) f64 {
     return (0.5 - normalized) * range;
 }
 
+/// Options for MSDF generation.
+pub const MsdfOptions = struct {
+    /// If true, negate distances to handle fonts with inverted winding directions.
+    /// Some fonts use CW (clockwise) outer contours instead of the standard CCW.
+    invert_distances: bool = false,
+};
+
 /// Generate a Multi-channel Signed Distance Field from a shape.
 ///
 /// Parameters:
@@ -178,6 +194,7 @@ pub fn pixelToDistance(pixel: u8, range: f64) f64 {
 /// - height: Output bitmap height in pixels.
 /// - range: Distance field range in shape units. Distances beyond this are clamped.
 /// - transform: Transform from pixel coordinates to shape coordinates.
+/// - options: Additional options for generation.
 ///
 /// Returns an MsdfBitmap containing the RGB8 distance field data.
 pub fn generateMsdf(
@@ -187,6 +204,7 @@ pub fn generateMsdf(
     height: u32,
     range: f64,
     transform: Transform,
+    options: MsdfOptions,
 ) !MsdfBitmap {
     const pixel_count = @as(usize, width) * @as(usize, height);
     const pixels = try allocator.alloc(u8, pixel_count * 3);
@@ -220,18 +238,21 @@ pub fn generateMsdf(
             // - Inside glyph → negative distance → bright pixels
             // - Outside glyph → positive distance → dark pixels
             // This matches MSDF convention, so use distances directly.
+            // For fonts with inverted winding (CW outer instead of CCW), negate distances.
             const distances = computeChannelDistances(shape, point);
-            const r_dist = distances[0];
-            const g_dist = distances[1];
-            const b_dist = distances[2];
+            const sign: f64 = if (options.invert_distances) -1.0 else 1.0;
+            const r_dist = distances[0] * sign;
+            const g_dist = distances[1] * sign;
+            const b_dist = distances[2] * sign;
 
             // Convert to pixel values
             const r = distanceToPixel(r_dist, range);
             const g = distanceToPixel(g_dist, range);
             const b = distanceToPixel(b_dist, range);
 
-            // Flip Y when storing: font coordinates have Y-up, images have Y-down
-            result.setPixel(x, height - 1 - y, .{ r, g, b });
+            // Store pixel - optionally flip Y for image coordinates
+            const store_y = if (transform.msdfgen_compat) y else height - 1 - y;
+            result.setPixel(x, store_y, .{ r, g, b });
         }
     }
 
@@ -312,66 +333,37 @@ fn computeContourChannelDistances(contour: Contour, point: Vec2) ContourChannelD
     return result;
 }
 
-/// Combine per-contour distances using the overlapping contour combiner algorithm.
-/// This resolves cross-contour interference by considering each contour's winding.
-///
-/// The algorithm handles the key insight that for multi-contour shapes:
-/// - If total_winding != 0, point is inside the filled region
-/// - If total_winding == 0, point is outside the filled region
-///
-/// For each contour, the distance sign indicates which side of that contour we're on:
-/// - Negative: on the "fill" side of this contour
-/// - Positive: on the "empty" side of this contour
-///
-/// We combine by taking the min absolute distance, but adjust signs based on whether
-/// that contour "counts" toward filling at this point.
+/// Combine per-contour distances using winding-aware approach.
+/// Uses total winding number to determine inside/outside, then applies
+/// the minimum absolute distance with the correct sign.
 fn combineContourDistances(contour_results: []const ContourChannelDistances, total_winding: i32) [3]f64 {
-    const is_inside = total_winding != 0;
-
-    // Find minimum absolute distance for each channel
+    // Find minimum absolute distance for each channel across all contours
     var min_r_abs: f64 = std.math.inf(f64);
     var min_g_abs: f64 = std.math.inf(f64);
     var min_b_abs: f64 = std.math.inf(f64);
-    var min_r: f64 = 0;
-    var min_g: f64 = 0;
-    var min_b: f64 = 0;
 
     for (contour_results) |cr| {
-        // Negate distances to match MSDF convention
-        const r = -cr.red.distance;
-        const g = -cr.green.distance;
-        const b = -cr.blue.distance;
+        const r_abs = @abs(cr.red.distance);
+        const g_abs = @abs(cr.green.distance);
+        const b_abs = @abs(cr.blue.distance);
 
-        // Track minimum absolute distance for each channel
-        if (@abs(r) < min_r_abs) {
-            min_r_abs = @abs(r);
-            min_r = r;
-        }
-        if (@abs(g) < min_g_abs) {
-            min_g_abs = @abs(g);
-            min_g = g;
-        }
-        if (@abs(b) < min_b_abs) {
-            min_b_abs = @abs(b);
-            min_b = b;
-        }
+        if (r_abs < min_r_abs) min_r_abs = r_abs;
+        if (g_abs < min_g_abs) min_g_abs = g_abs;
+        if (b_abs < min_b_abs) min_b_abs = b_abs;
     }
 
-    // Ensure sign consistency: all channels should agree with total winding
-    // MSDF convention: negative = inside, positive = outside
-    if (is_inside) {
-        // Inside filled region: all distances should be negative
-        if (min_r > 0) min_r = -min_r;
-        if (min_g > 0) min_g = -min_g;
-        if (min_b > 0) min_b = -min_b;
-    } else {
-        // Outside filled region: all distances should be positive
-        if (min_r < 0) min_r = -min_r;
-        if (min_g < 0) min_g = -min_g;
-        if (min_b < 0) min_b = -min_b;
-    }
+    // Determine inside/outside based on total winding number (non-zero fill rule)
+    // MSDF convention (matching distanceToPixel):
+    //   Inside: NEGATIVE distance -> bright pixels (255)
+    //   Outside: POSITIVE distance -> dark pixels (0)
+    const is_inside = total_winding != 0;
+    const sign: f64 = if (is_inside) -1.0 else 1.0;
 
-    return .{ min_r, min_g, min_b };
+    return .{
+        sign * min_r_abs,
+        sign * min_g_abs,
+        sign * min_b_abs,
+    };
 }
 
 /// Compute the minimum signed distance for each color channel.
@@ -381,16 +373,17 @@ fn combineContourDistances(contour_results: []const ContourChannelDistances, tot
 /// For multi-contour shapes (like @, $, 8), uses the overlapping contour
 /// combiner algorithm to resolve cross-contour interference.
 fn computeChannelDistances(shape: Shape, point: Vec2) [3]f64 {
-    // Fast path: single contour doesn't need combiner
+    // Fast path: single contour uses simpler algorithm
     if (shape.contours.len <= 1) {
         return computeChannelDistancesSingleContour(shape, point);
     }
 
-    // Multi-contour: per-contour computation with combiner
+    // Multi-contour: use winding-aware combiner
+    // This correctly handles both overlapping contours (like 'r' with serifs)
+    // and non-overlapping contours (like '=' with two bars)
     var stack_buffer: [16]ContourChannelDistances = undefined;
     if (shape.contours.len > 16) {
         // Fallback for shapes with many contours (rare in fonts)
-        // Use simple algorithm which may have artifacts but won't crash
         return computeChannelDistancesSingleContour(shape, point);
     }
     const contour_results = stack_buffer[0..shape.contours.len];
@@ -466,7 +459,8 @@ fn computeChannelDistancesSingleContour(shape: Shape, point: Vec2) [3]f64 {
     }
 
     // Negate distances to match MSDF convention:
-    // Our edge sign calculation produces inverted results compared to msdfgen.
+    // Our signed distance calculation produces negative for inside CCW contours,
+    // but MSDF convention expects positive for inside (maps to bright pixels).
     const r = -min_red.distance;
     const g = -min_green.distance;
     const b = -min_blue.distance;
@@ -1062,12 +1056,28 @@ fn median3(a: u8, b: u8, c: u8) u8 {
 ///
 /// Returns a Transform that maps pixel coordinates to shape coordinates.
 pub fn calculateTransform(shape_bounds: Bounds, width: u32, height: u32, padding: u32) Transform {
+    return calculateTransformWithRange(shape_bounds, width, height, @floatFromInt(padding));
+}
+
+/// Calculate the transform with a floating-point padding/range value.
+///
+/// This fits the shape into the available space (output minus padding on each side)
+/// and centers it. Same logic as calculateTransform but accepts float padding.
+///
+/// Parameters:
+/// - shape_bounds: Bounding box of the shape.
+/// - width: Output bitmap width in pixels.
+/// - height: Output bitmap height in pixels.
+/// - padding: Padding in pixels on each side (as float for range values).
+///
+/// Returns a Transform that maps pixel coordinates to shape coordinates.
+pub fn calculateTransformWithRange(shape_bounds: Bounds, width: u32, height: u32, padding: f64) Transform {
     const shape_width = shape_bounds.width();
     const shape_height = shape_bounds.height();
 
-    // Available space in pixels (after removing padding)
-    const available_width = @as(f64, @floatFromInt(width)) - 2.0 * @as(f64, @floatFromInt(padding));
-    const available_height = @as(f64, @floatFromInt(height)) - 2.0 * @as(f64, @floatFromInt(padding));
+    // Available space in pixels (after removing padding on each side)
+    const available_width = @as(f64, @floatFromInt(width)) - 2.0 * padding;
+    const available_height = @as(f64, @floatFromInt(height)) - 2.0 * padding;
 
     // Calculate scale to fit shape into available space
     // Use the smaller scale to maintain aspect ratio
@@ -1088,8 +1098,8 @@ pub fn calculateTransform(shape_bounds: Bounds, width: u32, height: u32, padding
     const scaled_width = shape_width * scale;
     const scaled_height = shape_height * scale;
 
-    const offset_x = @as(f64, @floatFromInt(padding)) + (available_width - scaled_width) / 2.0;
-    const offset_y = @as(f64, @floatFromInt(padding)) + (available_height - scaled_height) / 2.0;
+    const offset_x = padding + (available_width - scaled_width) / 2.0;
+    const offset_y = padding + (available_height - scaled_height) / 2.0;
 
     // The translation needs to account for the shape's minimum corner
     // translate.x = offset_x / scale - shape_bounds.min.x
@@ -1098,6 +1108,74 @@ pub fn calculateTransform(shape_bounds: Bounds, width: u32, height: u32, padding
         .y = offset_y / scale - shape_bounds.min.y,
     };
 
+    return Transform.init(scale, translate);
+}
+
+/// Calculate the transform using msdfgen's autoframe algorithm with RANGE_PX mode.
+///
+/// This matches msdfgen's behavior with `-autoframe -pxrange N` flags:
+/// 1. Enlarge the frame by 2*pxRange for scale calculation
+/// 2. Calculate scale to fit shape in enlarged frame (preserving aspect ratio)
+/// 3. Adjust translation to shift glyph inward by pxRange/scale
+///
+/// The result is that the glyph may extend slightly beyond the bitmap boundaries,
+/// but this is correct for MSDF generation - the distance field handles it properly.
+///
+/// Parameters:
+/// - shape_bounds: Bounding box of the shape.
+/// - width: Output bitmap width in pixels.
+/// - height: Output bitmap height in pixels.
+/// - px_range: Distance field range in pixels.
+///
+/// Returns a Transform that maps pixel coordinates to shape coordinates.
+pub fn calculateMsdfgenAutoframe(shape_bounds: Bounds, width: u32, height: u32, px_range: f64) Transform {
+    const l = shape_bounds.min.x;
+    const b = shape_bounds.min.y;
+    const r = shape_bounds.max.x;
+    const t = shape_bounds.max.y;
+
+    // Shape dimensions
+    const dims_x = r - l;
+    const dims_y = t - b;
+
+    // Available area: shrink by pxRange to leave room for the distance field border
+    // This matches msdfgen's behavior with -autoframe -noemnormalize
+    const available_x = @as(f64, @floatFromInt(width)) - px_range;
+    const available_y = @as(f64, @floatFromInt(height)) - px_range;
+
+    var scale: f64 = 1.0;
+    var translate = Vec2.zero;
+
+    if (dims_x > 0 and dims_y > 0) {
+        // Scale to fit glyph in available area (maintain aspect ratio)
+        const scale_x = available_x / dims_x;
+        const scale_y = available_y / dims_y;
+        scale = @min(scale_x, scale_y);
+
+        // Calculate scaled dimensions
+        const scaled_w = dims_x * scale;
+        const scaled_h = dims_y * scale;
+
+        // Center the scaled glyph in the full bitmap
+        const offset_x = (@as(f64, @floatFromInt(width)) - scaled_w) / 2.0;
+        const offset_y = (@as(f64, @floatFromInt(height)) - scaled_h) / 2.0;
+
+        // Translate: offset_in_pixels / scale - shape_origin
+        translate.x = offset_x / scale - l;
+        translate.y = offset_y / scale - b;
+    } else if (dims_x > 0) {
+        scale = available_x / dims_x;
+        const offset_x = (@as(f64, @floatFromInt(width)) - dims_x * scale) / 2.0;
+        translate.x = offset_x / scale - l;
+        translate.y = -b;
+    } else if (dims_y > 0) {
+        scale = available_y / dims_y;
+        const offset_y = (@as(f64, @floatFromInt(height)) - dims_y * scale) / 2.0;
+        translate.x = -l;
+        translate.y = offset_y / scale - b;
+    }
+
+    // Return standard transform - let generateMsdf flip Y for standard image output
     return Transform.init(scale, translate);
 }
 
@@ -1183,6 +1261,45 @@ test "calculateTransform - centers shape" {
     try std.testing.expectApproxEqAbs(@as(f64, 0.56), transform.scale, 1e-10);
 }
 
+test "calculateTransformWithRange - same as calculateTransform with float padding" {
+    // Test with typical MSDF parameters
+    const shape_bounds = Bounds.init(147, 0, 1466, 1552);
+    const transform = calculateTransformWithRange(shape_bounds, 32, 32, 4.0);
+
+    // With 32x32 output and 4px padding, available space is 24x24
+    // Shape is 1319x1552, so scale = min(24/1319, 24/1552) = 24/1552
+    try std.testing.expectApproxEqAbs(@as(f64, 24.0 / 1552.0), transform.scale, 1e-10);
+
+    // Verify it matches the integer-padding version
+    const transform_int = calculateTransform(shape_bounds, 32, 32, 4);
+    try std.testing.expectApproxEqAbs(transform_int.scale, transform.scale, 1e-10);
+    try std.testing.expectApproxEqAbs(transform_int.translate.x, transform.translate.x, 1e-10);
+    try std.testing.expectApproxEqAbs(transform_int.translate.y, transform.translate.y, 1e-10);
+}
+
+test "calculateMsdfgenAutoframe - matches msdfgen algorithm" {
+    // Test with typical MSDF parameters (matching msdfgen's autoframe with RANGE_PX)
+    const shape_bounds = Bounds.init(147, 0, 1466, 1552);
+    const transform = calculateMsdfgenAutoframe(shape_bounds, 32, 32, 4.0);
+
+    // With msdfgen autoframe:
+    // frame = (32 + 2*4, 32 + 2*4) = (40, 40)
+    // dims = (1319, 1552)
+    // 1319 * 40 < 1552 * 40 → height-limited
+    // scale = 40 / 1552 = 0.02577...
+    try std.testing.expectApproxEqAbs(@as(f64, 40.0 / 1552.0), transform.scale, 1e-10);
+
+    // Verify translation calculation:
+    // translate.x = 0.5 * (40/40 * 1552 - 1319) - 147 = 0.5 * 233 - 147 = -30.5
+    // translate.x -= 4 / scale = -30.5 - 155.2 = -185.7
+    const expected_tx = 0.5 * (1552.0 - 1319.0) - 147.0 - 4.0 / (40.0 / 1552.0);
+    try std.testing.expectApproxEqAbs(expected_tx, transform.translate.x, 0.1);
+
+    // translate.y = -0 - 4/scale = -155.2
+    const expected_ty = -0.0 - 4.0 / (40.0 / 1552.0);
+    try std.testing.expectApproxEqAbs(expected_ty, transform.translate.y, 0.1);
+}
+
 test "generateMsdf - empty shape" {
     const allocator = std.testing.allocator;
 
@@ -1190,7 +1307,7 @@ test "generateMsdf - empty shape" {
     defer shape.deinit();
 
     const transform = Transform.init(1.0, Vec2.zero);
-    var bitmap = try generateMsdf(allocator, shape, 8, 8, 4.0, transform);
+    var bitmap = try generateMsdf(allocator, shape, 8, 8, 4.0, transform, .{});
     defer bitmap.deinit();
 
     // With empty shape, all pixels should be "outside" (128 or less)
@@ -1220,7 +1337,7 @@ test "generateMsdf - simple square" {
     const bounds = shape.bounds();
     const transform = calculateTransform(bounds, 32, 32, 4);
 
-    var bitmap = try generateMsdf(allocator, shape, 32, 32, 4.0, transform);
+    var bitmap = try generateMsdf(allocator, shape, 32, 32, 4.0, transform, .{});
     defer bitmap.deinit();
 
     try std.testing.expectEqual(@as(u32, 32), bitmap.width);

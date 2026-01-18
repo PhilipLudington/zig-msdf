@@ -151,7 +151,11 @@ pub const SignedDistance = struct {
         const abs_other = @abs(other.distance);
         // Prefer the closer distance, or if equal, the LOWER orthogonality
         // (lower = more perpendicular approach = sharper corners)
-        if (abs_self != abs_other) {
+        // Use epsilon comparison to avoid floating-point instability at boundaries
+        // Use a larger epsilon (1e-10) to handle accumulated numerical errors
+        const epsilon: f64 = 1e-10;
+        const diff = abs_self - abs_other;
+        if (@abs(diff) > epsilon) {
             return abs_self < abs_other;
         }
         return self.orthogonality < other.orthogonality;

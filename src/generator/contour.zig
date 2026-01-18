@@ -11,6 +11,18 @@ const Vec2 = math.Vec2;
 const Bounds = math.Bounds;
 const EdgeSegment = edge.EdgeSegment;
 
+/// Intersection data for scanline algorithm.
+const Intersection = struct {
+    x: f64,
+    direction: i32,
+    contour_index: u32,
+};
+
+/// Comparison function for sorting intersections by X coordinate.
+fn lessThanIntersection(_: void, a: Intersection, b: Intersection) bool {
+    return a.x < b.x;
+}
+
 /// A contour is a closed loop of edge segments forming part of a shape outline.
 pub const Contour = struct {
     /// The edge segments making up this contour.
@@ -79,6 +91,28 @@ pub const Contour = struct {
             result = result.merge(e.bounds());
         }
         return result;
+    }
+
+    /// Reverse the direction of this contour.
+    /// This reverses the order of edges and the direction of each edge.
+    pub fn reverse(self: *Contour) void {
+        if (self.edges.len == 0) return;
+
+        // Reverse each edge and reverse the array order
+        var i: usize = 0;
+        var j: usize = self.edges.len - 1;
+        while (i < j) {
+            // Swap edges[i] and edges[j], reversing both
+            const tmp = self.edges[i].reverse();
+            self.edges[i] = self.edges[j].reverse();
+            self.edges[j] = tmp;
+            i += 1;
+            j -= 1;
+        }
+        // If odd number of edges, reverse the middle one
+        if (i == j) {
+            self.edges[i] = self.edges[i].reverse();
+        }
     }
 
     /// Check if the contour is closed (end of last edge meets start of first).
@@ -225,19 +259,190 @@ pub const Shape = struct {
         return true;
     }
 
+    /// Orient contours to conform to the non-zero winding rule.
+    /// Outer contours become CCW (positive winding), holes become CW (negative winding).
+    /// This fixes fonts with inconsistent or inverted winding like SF Mono.
+    ///
+    /// Algorithm (based on msdfgen's orientContours):
+    /// 1. For each contour, find a Y coordinate that crosses it
+    /// 2. Do a scanline intersection through the entire shape at that Y
+    /// 3. Use even-odd parity at the scanline to determine expected orientation
+    /// 4. Reverse contours that have the wrong orientation
+    pub fn orientContours(self: *Shape) void {
+        if (self.contours.len == 0) return;
+
+        const ratio: f64 = 0.5 * (@sqrt(5.0) - 1.0); // Golden ratio - avoids hitting corners
+
+        // Track orientation for each contour: 0 = unknown, positive = should be CCW, negative = should be CW
+        var orientations = [_]i32{0} ** 64;
+        if (self.contours.len > 64) return; // Safety limit
+
+        for (self.contours, 0..) |*contour, contour_idx| {
+            if (orientations[contour_idx] != 0 or contour.edges.len == 0) continue;
+
+            // Find a Y that crosses this contour
+            const y0 = contour.edges[0].point(0).y;
+            var y1 = y0;
+
+            // Look for different Y values to ensure we cross the contour
+            for (contour.edges) |e| {
+                const ey = e.point(1).y;
+                if (ey != y0) {
+                    y1 = ey;
+                    break;
+                }
+            }
+            if (y0 == y1) {
+                // Try midpoints
+                for (contour.edges) |e| {
+                    const ey = e.point(ratio).y;
+                    if (ey != y0) {
+                        y1 = ey;
+                        break;
+                    }
+                }
+            }
+
+            const y = y0 + ratio * (y1 - y0);
+
+            // Collect scanline intersections from all contours
+            var intersections: [256]Intersection = undefined;
+            var intersection_count: usize = 0;
+
+            for (self.contours, 0..) |scan_contour, scan_idx| {
+                for (scan_contour.edges) |e| {
+                    var x_vals: [3]f64 = undefined;
+                    var dy_vals: [3]i32 = undefined;
+                    const n = e.scanlineIntersections(y, &x_vals, &dy_vals);
+
+                    for (0..n) |k| {
+                        if (intersection_count < 256) {
+                            intersections[intersection_count] = .{
+                                .x = x_vals[k],
+                                .direction = dy_vals[k],
+                                .contour_index = @intCast(scan_idx),
+                            };
+                            intersection_count += 1;
+                        }
+                    }
+                }
+            }
+
+            // Debug: print scanline info
+            // std.debug.print("  Contour {d}: y={d:.1}, intersections={d}\n", .{ contour_idx, y, intersection_count });
+
+            if (intersection_count == 0) continue;
+
+            // Sort by X coordinate
+            std.mem.sort(Intersection, intersections[0..intersection_count], {}, lessThanIntersection);
+
+            // Disqualify duplicate X values (they indicate corner hits)
+            var j: usize = 1;
+            while (j < intersection_count) : (j += 1) {
+                if (intersections[j].x == intersections[j - 1].x) {
+                    intersections[j].direction = 0;
+                    intersections[j - 1].direction = 0;
+                }
+            }
+
+            // Deduce orientations using even-odd fill rule at scanline
+            // Odd index = inside, even = outside
+            for (0..intersection_count) |k| {
+                if (intersections[k].direction != 0) {
+                    const idx = intersections[k].contour_index;
+                    // At odd crossings we're going from outside to inside or vice versa
+                    // The direction tells us which way we're going
+                    // XOR with position parity determines if orientation is correct
+                    const parity_contrib = @as(i32, @intCast(@as(u32, @truncate(k)) & 1));
+                    const direction_contrib = @as(i32, if (intersections[k].direction > 0) @as(i32, 1) else @as(i32, 0));
+                    orientations[idx] += 2 * (parity_contrib ^ direction_contrib) - 1;
+                }
+            }
+        }
+
+        // Reverse contours with negative orientation (they're wound the wrong way)
+        for (self.contours, 0..) |*contour, i| {
+            if (orientations[i] < 0) {
+                contour.reverse();
+            }
+        }
+
+        // Handle contours that couldn't be determined by the scanline algorithm
+        // (orientation still 0). Use containment testing to determine if they're
+        // outer or inner contours.
+        for (self.contours, 0..) |*contour, i| {
+            if (orientations[i] == 0 and contour.edges.len > 0) {
+                // Count how many OTHER contours contain this one
+                const test_point = self.getContourInteriorPoint(contour.*);
+                var containment_count: usize = 0;
+
+                for (self.contours, 0..) |other, other_i| {
+                    if (other_i != i) {
+                        // Check if test_point is inside other contour using winding
+                        if (self.pointInsideContour(test_point, other)) {
+                            containment_count += 1;
+                        }
+                    }
+                }
+
+                // If contained by even number of contours (0, 2, 4...) → outer → should be CCW
+                // If contained by odd number of contours (1, 3, 5...) → inner/hole → should be CW
+                const should_be_ccw = (containment_count % 2 == 0);
+                const is_ccw = contour.winding() > 0;
+
+                if (should_be_ccw != is_ccw) {
+                    contour.reverse();
+                }
+            }
+        }
+    }
+
+    /// Get an interior point of a contour (for containment testing).
+    fn getContourInteriorPoint(self: Shape, cont: Contour) Vec2 {
+        _ = self;
+        if (cont.edges.len == 0) return Vec2{ .x = 0, .y = 0 };
+
+        // Use centroid of first few edge midpoints
+        var sum_x: f64 = 0;
+        var sum_y: f64 = 0;
+        const sample_count = @min(cont.edges.len, 4);
+
+        for (cont.edges[0..sample_count]) |e| {
+            const p = e.point(0.5);
+            sum_x += p.x;
+            sum_y += p.y;
+        }
+
+        return Vec2{
+            .x = sum_x / @as(f64, @floatFromInt(sample_count)),
+            .y = sum_y / @as(f64, @floatFromInt(sample_count)),
+        };
+    }
+
+    /// Check if a point is inside a contour using winding number.
+    fn pointInsideContour(self: Shape, point: Vec2, cont: Contour) bool {
+        _ = self;
+        var winding: i32 = 0;
+
+        for (cont.edges) |e| {
+            var x_vals: [3]f64 = undefined;
+            var dy_vals: [3]i32 = undefined;
+            const n = e.scanlineIntersections(point.y, &x_vals, &dy_vals);
+
+            for (0..n) |k| {
+                if (x_vals[k] < point.x) {
+                    winding += dy_vals[k];
+                }
+            }
+        }
+
+        return winding != 0;
+    }
+
     /// Normalize the shape orientation so outer contours are CCW
     /// and inner contours (holes) are CW.
     pub fn normalize(self: *Shape) void {
-        // For TrueType fonts with Y-up coordinates, the convention is:
-        // - Outer contours are counter-clockwise (CCW, positive winding)
-        // - Inner contours (holes) are clockwise (CW, negative winding)
-        //
-        // The edge sign calculation in edge.zig handles this automatically:
-        // - CCW edges: left side (inside glyph) → negative distance
-        // - CW edges: right side (inside hole = outside glyph) → positive distance
-        //
-        // No normalization is needed as long as the font follows TrueType conventions.
-        _ = self;
+        self.orientContours();
     }
 
     /// Split all cubic bezier edges at their inflection points across all contours.
