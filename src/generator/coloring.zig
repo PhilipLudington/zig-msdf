@@ -166,42 +166,54 @@ fn angleBetween(a: Vec2, b: Vec2) f64 {
     return @abs(angle);
 }
 
+/// Switch to next color using msdfgen's algorithm.
+/// msdfgen uses: shifted = color << (1 + seed_bit); color = (shifted | shifted>>3) & WHITE
+/// With seed=0, this gives: CYAN -> MAGENTA -> YELLOW -> CYAN -> ...
+fn switchColor(color: EdgeColor) EdgeColor {
+    // Simplified version of msdfgen's switchColor with seed=0
+    // CYAN (6) -> MAGENTA (5) -> YELLOW (3) -> CYAN (6)
+    return switch (color) {
+        .cyan => .magenta,
+        .magenta => .yellow,
+        .yellow => .cyan,
+        else => .cyan,
+    };
+}
+
 /// Color edges between identified corners.
-/// Each edge gets a different color to ensure all three RGB channels
-/// have nearby edges at any point along the curve.
+/// Matches msdfgen's algorithm: ALL edges between corners get the SAME color,
+/// and we only switch color at corners.
 fn colorBetweenCorners(contour: *Contour, corners: []const usize) void {
     const edge_count = contour.edges.len;
+    const corner_count = corners.len;
 
-    // Available colors for alternating - ordered so adjacent colors share one channel:
-    // cyan (G+B) → yellow (R+G) → magenta (R+B) → cyan...
-    // This ensures smooth channel transitions along the curve.
-    const color_set = [_]EdgeColor{ .cyan, .yellow, .magenta };
+    // Start with cyan, then switch to magenta before coloring (matching msdfgen seed=0)
+    var color = switchColor(.cyan); // = magenta
+    const initial_color = color;
 
-    // Track cumulative edge count to ensure consecutive edges always
-    // have different colors, even across section boundaries
-    var cumulative_edge_idx: usize = 0;
+    var spline: usize = 0;
+    const start = corners[0];
 
-    for (corners, 0..) |corner_start, corner_idx| {
-        const corner_end = if (corner_idx + 1 < corners.len)
-            corners[corner_idx + 1]
-        else
-            corners[0]; // Wrap around
+    var i: usize = 0;
+    while (i < edge_count) : (i += 1) {
+        const index = (start + i) % edge_count;
 
-        // Color edges in this segment
-        var i = corner_start;
-
-        while (true) {
-            const edge = &contour.edges[i];
-
-            // Assign color based on cumulative position in contour
-            // This ensures every consecutive edge gets a different color
-            const color = color_set[cumulative_edge_idx % color_set.len];
-            edge.setColor(color);
-
-            cumulative_edge_idx += 1;
-            i = (i + 1) % edge_count;
-            if (i == corner_end) break;
+        // Check if we've reached the next corner
+        if (spline + 1 < corner_count and corners[spline + 1] == index) {
+            spline += 1;
+            // At the last corner, avoid using initial_color (banned color mechanism)
+            if (spline == corner_count - 1) {
+                color = switchColor(color);
+                // If we ended up with initial_color, switch again
+                if (color == initial_color) {
+                    color = switchColor(color);
+                }
+            } else {
+                color = switchColor(color);
+            }
         }
+
+        contour.edges[index].setColor(color);
     }
 }
 
