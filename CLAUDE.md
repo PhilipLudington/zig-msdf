@@ -10,7 +10,7 @@ zig-msdf is a pure Zig library for generating Multi-channel Signed Distance Fiel
 
 ```bash
 zig build              # Build library and examples
-zig build test         # Run all tests (56 total)
+zig build test         # Run all tests
 zig fmt src/           # Format source code
 ```
 
@@ -30,6 +30,9 @@ zig build corner-debug     # Debug corner pixel distances
 zig build debug-coloring   # Debug edge coloring
 zig build m-corner-diag    # Debug M character corners
 zig build artifact-diag    # Analyze MSDF artifacts
+zig build debug-autoframe  # Debug autoframe transform calculations
+zig build debug-edge-colors # Debug edge coloring for 'A' glyph
+zig build channel-diversity # Test channel diversity
 ```
 
 ## Architecture
@@ -37,7 +40,7 @@ zig build artifact-diag    # Analyze MSDF artifacts
 ### Core Pipeline
 
 ```
-Font File → Parser → Shape (contours/edges) → Coloring → MSDF Generation → Bitmap
+Font File → Parser → Shape (contours/edges) → orientContours() → Coloring → MSDF Generation → Bitmap
 ```
 
 ### Module Structure
@@ -51,7 +54,7 @@ Font File → Parser → Shape (contours/edges) → Coloring → MSDF Generation
 **Generator** (`src/generator/`):
 - `math.zig` - Vec2, Bounds, SignedDistance, Bezier math
 - `edge.zig` - EdgeSegment (line, quadratic, cubic), distance calculations
-- `contour.zig` - Contour and Shape types, winding calculation
+- `contour.zig` - Contour and Shape types, winding calculation, `orientContours()`
 - `coloring.zig` - Edge coloring algorithm (assigns R/G/B channels)
 - `generate.zig` - MSDF generation, transform calculation, error correction
 
@@ -76,9 +79,13 @@ Two modes available via `GenerateOptions.msdfgen_autoframe`:
 - `false` (default): Conservative - glyph stays within bitmap bounds
 - `true`: msdfgen-compatible - may extend slightly beyond bounds for larger glyphs
 
+### Winding and Orientation
+
+The pipeline calls `shape.orientContours()` which normalizes all contours to standard winding (CCW outer, CW holes). This handles fonts with inconsistent or inverted winding like SF Mono, eliminating the need for `invert_distances` in most cases.
+
 ## Reference Implementation
 
-The reference C++ msdfgen is at `/Users/mrphil/Fun/msdfgen`. Use for comparison:
+The reference C++ msdfgen is at `~/Fun/msdfgen`. Use for comparison:
 
 ```bash
 msdfgen msdf -font "/System/Library/Fonts/Geneva.ttf" 65 \
@@ -88,7 +95,7 @@ msdfgen msdf -font "/System/Library/Fonts/Geneva.ttf" 65 \
 
 ## Current Development Status
 
-All 56 tests passing. Active work on reducing differences between zig-msdf and msdfgen output. Key metrics tracked: Mean Absolute Error (MAE), match rate, inside/outside agreement.
+Active work on reducing differences between zig-msdf and msdfgen output. Key metrics tracked: Mean Absolute Error (MAE), match rate, inside/outside agreement.
 
 ## Coding Standards
 
