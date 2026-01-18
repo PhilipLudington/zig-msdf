@@ -33,9 +33,15 @@ const corner_angle_threshold = 3.0; // msdfgen default
 /// This assigns colors to edges so that corners are preserved.
 /// Note: Unlike some implementations, we do NOT split at inflection points
 /// to match msdfgen's behavior exactly.
+///
+/// IMPORTANT: Color state persists across contours (matching msdfgen).
+/// This ensures different contours get different colors for better channel diversity.
 pub fn colorEdges(shape: *Shape, angle_threshold: f64) void {
+    // Initialize color state once for the entire shape (matching msdfgen with seed=0)
+    var color: EdgeColor = .cyan;
+
     for (shape.contours) |*contour| {
-        colorContour(contour, angle_threshold);
+        color = colorContourWithState(contour, angle_threshold, color);
     }
 }
 
@@ -44,23 +50,28 @@ pub fn colorEdgesSimple(shape: *Shape) void {
     colorEdges(shape, corner_angle_threshold);
 }
 
-/// Color edges in a single contour.
+/// Color edges in a single contour with persistent color state.
 /// Uses msdfgen's corner detection: dot <= 0 OR |cross| > sin(angleThreshold).
-fn colorContour(contour: *Contour, angle_threshold: f64) void {
+/// Returns the updated color state for the next contour.
+fn colorContourWithState(contour: *Contour, angle_threshold: f64, initial_color: EdgeColor) EdgeColor {
     const edge_count = contour.edges.len;
-    if (edge_count == 0) return;
+    var color = initial_color;
+
+    if (edge_count == 0) return color;
 
     // Single edge contour: use white (all channels)
     if (edge_count == 1) {
         contour.edges[0].setColor(.white);
-        return;
+        return color;
     }
 
-    // Two edge contour: alternate colors
+    // Two edge contour: switch color and alternate
     if (edge_count == 2) {
-        contour.edges[0].setColor(.cyan);
-        contour.edges[1].setColor(.magenta);
-        return;
+        color = switchColor(color);
+        contour.edges[0].setColor(color);
+        color = switchColor(color);
+        contour.edges[1].setColor(color);
+        return color;
     }
 
     // Find corners using msdfgen's detection method
@@ -91,18 +102,18 @@ fn colorContour(contour: *Contour, angle_threshold: f64) void {
         }
     }
 
-    // If no corners or curvature changes detected, use alternating colors
-    // to ensure all channels have nearby edges
+    // If no corners or curvature changes detected (smooth contour),
+    // switch color and use same color for all edges (matching msdfgen)
     if (corners_len == 0) {
-        const colors = [_]EdgeColor{ .cyan, .magenta, .yellow };
-        for (contour.edges, 0..) |*e, i| {
-            e.setColor(colors[i % 3]);
+        color = switchColor(color);
+        for (contour.edges) |*e| {
+            e.setColor(color);
         }
-        return;
+        return color;
     }
 
     // Color edges between corners/boundaries
-    colorBetweenCorners(contour, corners_buffer[0..corners_len]);
+    return colorBetweenCornersWithState(contour, corners_buffer[0..corners_len], color);
 }
 
 /// Find the curvature of the previous curved edge (looking past linear edges).
@@ -180,16 +191,17 @@ fn switchColor(color: EdgeColor) EdgeColor {
     };
 }
 
-/// Color edges between identified corners.
+/// Color edges between identified corners with persistent color state.
 /// Matches msdfgen's algorithm: ALL edges between corners get the SAME color,
 /// and we only switch color at corners.
-fn colorBetweenCorners(contour: *Contour, corners: []const usize) void {
+/// Returns the updated color state for the next contour.
+fn colorBetweenCornersWithState(contour: *Contour, corners: []const usize, initial_color: EdgeColor) EdgeColor {
     const edge_count = contour.edges.len;
     const corner_count = corners.len;
 
-    // Start with cyan, then switch to magenta before coloring (matching msdfgen seed=0)
-    var color = switchColor(.cyan); // = magenta
-    const initial_color = color;
+    // Switch color before starting (matching msdfgen)
+    var color = switchColor(initial_color);
+    const contour_initial_color = color;
 
     var spline: usize = 0;
     const start = corners[0];
@@ -201,11 +213,11 @@ fn colorBetweenCorners(contour: *Contour, corners: []const usize) void {
         // Check if we've reached the next corner
         if (spline + 1 < corner_count and corners[spline + 1] == index) {
             spline += 1;
-            // At the last corner, avoid using initial_color (banned color mechanism)
+            // At the last corner, avoid using contour_initial_color (banned color mechanism)
             if (spline == corner_count - 1) {
                 color = switchColor(color);
-                // If we ended up with initial_color, switch again
-                if (color == initial_color) {
+                // If we ended up with contour_initial_color, switch again
+                if (color == contour_initial_color) {
                     color = switchColor(color);
                 }
             } else {
@@ -215,6 +227,8 @@ fn colorBetweenCorners(contour: *Contour, corners: []const usize) void {
 
         contour.edges[index].setColor(color);
     }
+
+    return color;
 }
 
 /// Detect if a junction between two edges forms a corner.
