@@ -198,6 +198,38 @@ pub fn main() !void {
         };
         defer shape.deinit();
 
+        // Debug corner detection for D character
+        if (char == 'D') {
+            const cross_threshold = @sin(3.0);
+            std.debug.print("\n  === Corner Detection Debug (threshold sin(3.0) = {d:.6}) ===\n", .{cross_threshold});
+
+            for (shape.contours, 0..) |contour, ci| {
+                std.debug.print("\n  Contour {d} - {d} edges:\n", .{ci, contour.edges.len});
+                const edge_count = contour.edges.len;
+
+                for (0..edge_count) |i| {
+                    const prev_idx = if (i == 0) edge_count - 1 else i - 1;
+                    const prev_edge = contour.edges[prev_idx];
+                    const curr_edge = contour.edges[i];
+
+                    const prev_dir = prev_edge.direction(1.0);
+                    const curr_dir = curr_edge.direction(0.0);
+                    const prev_norm = prev_dir.normalize();
+                    const curr_norm = curr_dir.normalize();
+
+                    const dot = prev_norm.dot(curr_norm);
+                    const cross = prev_norm.cross(curr_norm);
+
+                    const is_corner = dot <= 0 or @abs(cross) > cross_threshold;
+
+                    std.debug.print("    {d}->{d}: prev_dir=({d:6.3},{d:6.3}) curr_dir=({d:6.3},{d:6.3})\n",
+                        .{prev_idx, i, prev_norm.x, prev_norm.y, curr_norm.x, curr_norm.y});
+                    std.debug.print("           dot={d:7.4} cross={d:7.4} |cross|>{d:.4}? {} => CORNER={}\n",
+                        .{dot, cross, cross_threshold, @abs(cross) > cross_threshold, is_corner});
+                }
+            }
+        }
+
         // Apply coloring
         msdf.coloring.colorEdgesSimple(&shape);
 

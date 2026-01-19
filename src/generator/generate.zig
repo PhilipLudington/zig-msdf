@@ -373,28 +373,13 @@ fn combineContourDistances(contour_results: []const ContourChannelDistances, tot
 /// For multi-contour shapes (like @, $, 8), uses the overlapping contour
 /// combiner algorithm to resolve cross-contour interference.
 fn computeChannelDistances(shape: Shape, point: Vec2) [3]f64 {
-    // Fast path: single contour uses simpler algorithm
-    if (shape.contours.len <= 1) {
-        return computeChannelDistancesSingleContour(shape, point);
-    }
-
-    // Multi-contour: use winding-aware combiner
-    // This correctly handles both overlapping contours (like 'r' with serifs)
-    // and non-overlapping contours (like '=' with two bars)
-    var stack_buffer: [16]ContourChannelDistances = undefined;
-    if (shape.contours.len > 16) {
-        // Fallback for shapes with many contours (rare in fonts)
-        return computeChannelDistancesSingleContour(shape, point);
-    }
-    const contour_results = stack_buffer[0..shape.contours.len];
-
-    var total_winding: i32 = 0;
-    for (shape.contours, 0..) |contour, i| {
-        contour_results[i] = computeContourChannelDistances(contour, point);
-        total_winding += contour_results[i].winding;
-    }
-
-    return combineContourDistances(contour_results, total_winding);
+    // Use the simple approach for all shapes: find minimum distance for each
+    // channel across ALL edges in ALL contours, preserving signed distances
+    // directly from edge geometry.
+    //
+    // This matches msdfgen's SimpleContourCombiner approach, which treats
+    // the entire shape as a single unit regardless of contour count.
+    return computeChannelDistancesSingleContour(shape, point);
 }
 
 /// Single-contour implementation of channel distance computation.

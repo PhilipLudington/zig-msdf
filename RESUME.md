@@ -361,11 +361,57 @@ zig build test 2>&1 | grep "Match rate"
 
 ---
 
+## Multi-Contour Distance Combination Fix (IMPLEMENTED)
+
+**Problem:** The D character (and other multi-contour characters like O, B) showed muted/inverted colors compared to msdfgen. The G channel at the left vertical edge was 255 (inside) when it should be 0 (outside).
+
+### Root Cause
+
+The `combineContourDistances` function was fundamentally broken:
+
+```zig
+// OLD (WRONG): Takes absolute value and applies global sign
+const r_abs = @abs(cr.red.distance);
+const sign: f64 = if (is_inside) -1.0 else 1.0;
+return sign * min_r_abs;  // Same sign for ALL channels!
+```
+
+This destroyed per-channel sign information. In MSDF, each channel's sign must come from its own nearest edge's geometry.
+
+### Solution
+
+Removed the broken multi-contour combiner and use the simple approach for ALL shapes:
+
+```zig
+fn computeChannelDistances(shape: Shape, point: Vec2) [3]f64 {
+    // Use simple approach: find minimum distance for each channel
+    // across ALL edges in ALL contours, preserving signed distances
+    return computeChannelDistancesSingleContour(shape, point);
+}
+```
+
+This matches msdfgen's `SimpleContourCombiner` which treats all edges as a single pool.
+
+### Results
+
+| Character | Before | After |
+|-----------|--------|-------|
+| Geneva A (with autoframe) | 83.9% | **99.7%** |
+| D (DejaVuSans) | 22.7% | **58.5%** |
+| O (DejaVuSans) | 7.8% | **64.9%** |
+| B (DejaVuSans) | 23.5% | **63.4%** |
+| M (DejaVuSans) | 24.1% | **50.9%** |
+
+Tests: 56/57 passing (was 55/57).
+
+---
+
 ## Summary of All Changes
 
-| Change | Match Rate | Improvement |
-|--------|------------|-------------|
+| Change | Geneva A Match Rate | Notes |
+|--------|---------------------|-------|
 | Original baseline | 70.1% | - |
 | Edge coloring: same color per section | 78.2% | +8.1% |
 | Color state persists across contours | 83.9% | +5.7% |
-| **Total improvement** | **83.9%** | **+13.8%** |
+| Simple contour combiner (no winding-based sign) | **99.7%** | **+15.8%** |
+| **Total improvement** | **99.7%** | **+29.6%** |
