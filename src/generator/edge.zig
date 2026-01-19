@@ -167,101 +167,78 @@ pub const QuadraticSegment = struct {
     }
 
     /// Compute the signed distance and closest parameter from a point to this segment.
+    /// Matches msdfgen's QuadraticSegment::signedDistance exactly.
     pub fn signedDistanceWithParam(self: QuadraticSegment, origin: Vec2) DistanceResult {
-        // Transform to coefficient form for distance calculation
-        // Q(t) = (1-t)²P0 + 2(1-t)tP1 + t²P2
-        // Q(t) = P0 - 2P0t + P0t² + 2P1t - 2P1t² + P2t²
-        // Q(t) = P0 + t(-2P0 + 2P1) + t²(P0 - 2P1 + P2)
-        const qa = self.p0;
-        const qb = self.p1.scale(2).sub(self.p0.scale(2));
-        const qc = self.p0.sub(self.p1.scale(2)).add(self.p2);
+        // msdfgen naming: qa = p[0]-origin, ab = p[1]-p[0], br = p[2]-p[1]-ab
+        const qa = self.p0.sub(origin);
+        const ab = self.p1.sub(self.p0);
+        const br = self.p2.sub(self.p1).sub(ab);
 
-        // Distance squared: |Q(t) - origin|² = (qa-origin + qb*t + qc*t²)²
-        // Minimize by taking derivative and setting to zero
-        // This gives a cubic equation in t
-
-        const pa = qa.sub(origin);
-
-        // Coefficients of the derivative polynomial (cubic)
-        // d/dt |Q(t) - origin|² = 2(Q(t) - origin) · Q'(t) = 0
-        // Expanding (pa + qb*t + qc*t²) · (qb + 2*qc*t) = 0 gives:
-        // pa·qb + (2*pa·qc + qb·qb)*t + 3*qb·qc*t² + 2*qc·qc*t³ = 0
-        // This is: at³ + bt² + ct + d = 0
-
-        const a = 2.0 * qc.dot(qc);
-        const b = 3.0 * qb.dot(qc);
-        const c = qb.dot(qb) + 2.0 * pa.dot(qc);
-        const d = pa.dot(qb);
+        // Cubic coefficients for distance minimization
+        // solveCubic(a, b, c, d) solves ax³ + bx² + cx + d = 0
+        const a = br.dot(br);
+        const b = 3.0 * ab.dot(br);
+        const c = 2.0 * ab.dot(ab) + qa.dot(br);
+        const d = qa.dot(ab);
 
         // Solve for critical points
         const roots = math.solveCubic(a, b, c, d);
 
-        // Find minimum distance among critical points and endpoints
-        var min_dist = SignedDistance.infinite;
-        var best_t: f64 = 0.0;
+        // Start with endpoint A (t=0)
+        var ep_dir = self.direction(0);
+        // msdfgen: nonZeroSign(crossProduct(qa, epDir)) - qa.cross(ep_dir), not ep_dir.cross(qa)
+        var min_distance = math.nonZeroSign(qa.cross(ep_dir)) * qa.length();
+        // Projected param for pseudo-distance: can be < 0
+        var best_param = -qa.dot(ep_dir) / ep_dir.dot(ep_dir);
 
-        // Check endpoints
-        const check0 = checkDistanceQuad(self, 0.0, origin);
-        if (check0.distance.lessThan(min_dist)) {
-            min_dist = check0.distance;
-            best_t = 0.0;
+        // Check endpoint B (t=1)
+        const qb = self.p2.sub(origin);
+        const dist_b = qb.length();
+        if (dist_b < @abs(min_distance)) {
+            ep_dir = self.direction(1);
+            min_distance = math.nonZeroSign(qb.cross(ep_dir)) * dist_b;
+            // msdfgen: dotProduct(origin-p[1], epDir)/dotProduct(epDir, epDir)
+            const origin_p1 = origin.sub(self.p1);
+            best_param = origin_p1.dot(ep_dir) / ep_dir.dot(ep_dir);
         }
 
-        const check1 = checkDistanceQuad(self, 1.0, origin);
-        if (check1.distance.lessThan(min_dist)) {
-            min_dist = check1.distance;
-            best_t = 1.0;
-        }
-
-        // Check interior critical points
+        // Check interior critical points - use <= to favor interior points
         for (roots.slice()) |t| {
             if (t > 0.0 and t < 1.0) {
-                const check = checkDistanceQuad(self, t, origin);
-                if (check.distance.lessThan(min_dist)) {
-                    min_dist = check.distance;
-                    best_t = t;
+                // qe = qa + 2*t*ab + t²*br = point(t) - origin
+                const t2 = t * t;
+                const qe = qa.add(ab.scale(2.0 * t)).add(br.scale(t2));
+                const distance = qe.length();
+
+                // msdfgen uses <= for interior points (favor them over endpoints)
+                if (distance <= @abs(min_distance)) {
+                    // Sign: cross(ab + t*br, qe) - this is the tangent direction
+                    const tangent_at_t = ab.add(br.scale(t));
+                    min_distance = math.nonZeroSign(tangent_at_t.cross(qe)) * distance;
+                    best_param = t;
                 }
             }
         }
 
-        return DistanceResult.init(min_dist, best_t);
-    }
+        // Compute orthogonality based on param
+        // msdfgen: interior points (param in [0,1]) get ortho=0
+        // Endpoints get ortho = |dot(tangent.normalize(), approach.normalize())|
+        var ortho: f64 = 0.0;
+        if (best_param < 0.0 or best_param > 1.0) {
+            if (best_param < 0.5) {
+                // Closer to start
+                const dir = self.direction(0).normalize();
+                const qa_norm = if (qa.length() > 0) qa.normalize() else Vec2.init(0, 0);
+                ortho = @abs(dir.dot(qa_norm));
+            } else {
+                // Closer to end
+                const dir = self.direction(1).normalize();
+                const qb_norm = if (qb.length() > 0) qb.normalize() else Vec2.init(0, 0);
+                ortho = @abs(dir.dot(qb_norm));
+            }
+        }
 
-    fn checkDistanceQuad(self: QuadraticSegment, t: f64, origin: Vec2) struct { distance: SignedDistance } {
-        const p = self.point(t);
-        const qp = p.sub(origin); // point - origin
-        const dist = qp.length();
-
-        // Determine sign using cross product - matches msdfgen exactly
-        // msdfgen uses different vectors for endpoints vs interior:
-        // - t=0: cross(p1-p0, p0-origin)
-        // - t=1: cross(p2-p1, p2-origin)
-        // - interior: cross(direction(t), point(t)-origin)
-        const cross_val = if (t <= 0.0) blk: {
-            // Start point: use first control leg
-            const ab = self.p1.sub(self.p0);
-            const qa = self.p0.sub(origin);
-            break :blk ab.cross(qa);
-        } else if (t >= 1.0) blk: {
-            // End point: use second control leg
-            const bc = self.p2.sub(self.p1);
-            const qc = self.p2.sub(origin);
-            break :blk bc.cross(qc);
-        } else blk: {
-            // Interior: use actual tangent
-            const tangent = self.direction(t);
-            break :blk tangent.cross(qp);
-        };
-
-        const sign: f64 = if (cross_val >= 0) 1.0 else -1.0;
-
-        // Orthogonality = |dot(tangent, approach_dir)|
-        // 0 = perpendicular (best), 1 = parallel (worst)
-        // This matches msdfgen's convention
-        const tangent = self.direction(t);
-        const ortho = if (dist == 0) 0.0 else @abs(tangent.normalize().dot(qp.normalize()));
-
-        return .{ .distance = SignedDistance.init(sign * dist, ortho) };
+        return DistanceResult.init(SignedDistance.init(min_distance, ortho), best_param);
     }
 
     /// Get the curvature sign of this quadratic bezier.
@@ -362,133 +339,110 @@ pub const CubicSegment = struct {
 
     /// Compute the signed distance and closest parameter from a point to this segment.
     /// Uses msdfgen-compatible algorithm with multiple search starts and Newton refinement.
+    /// Matches msdfgen's CubicSegment::signedDistance exactly.
     pub fn signedDistanceWithParam(self: CubicSegment, origin: Vec2) DistanceResult {
-        // For cubic curves, the distance minimization leads to a quintic equation.
-        // We use msdfgen's approach: multiple search starts with Newton refinement from each.
-
-        // Precompute polynomial coefficients like msdfgen
-        // qa = p0 - origin, ab = p1 - p0, br = p2 - p1 - ab, as = p3 - p2 - br - ab
+        // msdfgen naming conventions
         const qa = self.p0.sub(origin);
         const ab = self.p1.sub(self.p0);
         const br = self.p2.sub(self.p1).sub(ab);
-        const as = self.p3.sub(self.p2).sub(br).sub(ab);
+        const as_vec = self.p3.sub(self.p2).sub(self.p2.sub(self.p1)).sub(br);
 
-        // Track best result
-        var best_t: f64 = 0;
-        var best_dist: f64 = qa.length();
+        // Start with endpoint A (t=0)
+        var ep_dir = self.direction(0);
+        // msdfgen: nonZeroSign(crossProduct(qa, epDir)) - qa.cross(ep_dir), not ep_dir.cross(qa)
+        var min_distance = math.nonZeroSign(qa.cross(ep_dir)) * qa.length();
+        // Projected param for pseudo-distance: can be < 0
+        var best_param = -qa.dot(ep_dir) / ep_dir.dot(ep_dir);
 
-        // Check endpoint at t=1
-        const end_dist = self.p3.sub(origin).length();
-        if (end_dist < best_dist) {
-            best_dist = end_dist;
-            best_t = 1;
+        // Check endpoint B (t=1)
+        const qb = self.p3.sub(origin);
+        const dist_b = qb.length();
+        if (dist_b < @abs(min_distance)) {
+            ep_dir = self.direction(1);
+            min_distance = math.nonZeroSign(qb.cross(ep_dir)) * dist_b;
+            // msdfgen: dotProduct(epDir-(p[3]-origin), epDir)/dotProduct(epDir, epDir)
+            // This matches the msdfgen formula exactly
+            const vec_diff = ep_dir.sub(qb);
+            best_param = vec_diff.dot(ep_dir) / ep_dir.dot(ep_dir);
         }
 
-        // Search with multiple starting points (msdfgen uses MSDFGEN_CUBIC_SEARCH_STARTS, typically 4-8)
-        const search_starts: usize = 8;
-        const search_steps: usize = 4;
+        // Iterative minimum distance search with multiple starting points
+        const search_starts: usize = 4; // MSDFGEN_CUBIC_SEARCH_STARTS default
+        const search_steps: usize = 4; // MSDFGEN_CUBIC_SEARCH_STEPS default
 
         var i: usize = 0;
         while (i <= search_starts) : (i += 1) {
             var t = @as(f64, @floatFromInt(i)) / @as(f64, search_starts);
 
-            // Compute qe = point(t) - origin using polynomial form
             // qe = qa + 3*t*ab + 3*t²*br + t³*as
             const t2 = t * t;
             const t3 = t2 * t;
-            var qe = qa.add(ab.scale(3 * t)).add(br.scale(3 * t2)).add(as.scale(t3));
+            var qe = qa.add(ab.scale(3 * t)).add(br.scale(3 * t2)).add(as_vec.scale(t3));
 
-            // d1 = first derivative of qe = 3*ab + 6*t*br + 3*t²*as
-            var d1 = ab.scale(3).add(br.scale(6 * t)).add(as.scale(3 * t2));
+            // d1 = 3*ab + 6*t*br + 3*t²*as
+            var d1 = ab.scale(3).add(br.scale(6 * t)).add(as_vec.scale(3 * t2));
 
-            // d2 = second derivative = 6*br + 6*t*as
-            var d2 = br.scale(6).add(as.scale(6 * t));
+            // d2 = 6*br + 6*t*as
+            var d2 = br.scale(6).add(as_vec.scale(6 * t));
 
-            // Newton step: t_new = t - dot(qe, d1) / (dot(d1, d1) + dot(qe, d2))
+            // Newton step
             const denom = d1.dot(d1) + qe.dot(d2);
-            if (@abs(denom) < 1e-14) continue;
+            if (@abs(denom) < 1e-14) {
+                i += 1;
+                continue;
+            }
 
             var improved_t = t - qe.dot(d1) / denom;
 
-            // Iterate if improved_t is valid (in (0,1))
             if (improved_t > 0 and improved_t < 1) {
                 var remaining_steps: usize = search_steps;
-                while (remaining_steps > 0) : (remaining_steps -= 1) {
+                while (remaining_steps > 0) {
                     t = improved_t;
                     const t2_new = t * t;
                     const t3_new = t2_new * t;
 
-                    qe = qa.add(ab.scale(3 * t)).add(br.scale(3 * t2_new)).add(as.scale(t3_new));
-                    d1 = ab.scale(3).add(br.scale(6 * t)).add(as.scale(3 * t2_new));
-                    d2 = br.scale(6).add(as.scale(6 * t));
+                    qe = qa.add(ab.scale(3 * t)).add(br.scale(3 * t2_new)).add(as_vec.scale(t3_new));
+                    d1 = ab.scale(3).add(br.scale(6 * t)).add(as_vec.scale(3 * t2_new));
 
+                    remaining_steps -= 1;
+                    if (remaining_steps == 0) break;
+
+                    d2 = br.scale(6).add(as_vec.scale(6 * t));
                     const denom_new = d1.dot(d1) + qe.dot(d2);
                     if (@abs(denom_new) < 1e-14) break;
 
                     improved_t = t - qe.dot(d1) / denom_new;
-
                     if (improved_t <= 0 or improved_t >= 1) break;
                 }
 
-                // Check distance at converged t
-                const dist = qe.length();
-                if (dist < best_dist) {
-                    best_dist = dist;
-                    best_t = t;
+                // Check distance at converged t - use strict < for cubic (matches msdfgen)
+                const distance = qe.length();
+                if (distance < @abs(min_distance)) {
+                    min_distance = math.nonZeroSign(d1.cross(qe)) * distance;
+                    best_param = t;
                 }
             }
         }
 
-        // Ensure endpoints are checked with actual squared distance calculation
-        var final_best_t = best_t;
-        var final_best_dist_sq = best_dist * best_dist;
-
-        const dist_0_sq = origin.distanceSquared(self.p0);
-        if (dist_0_sq < final_best_dist_sq) {
-            final_best_dist_sq = dist_0_sq;
-            final_best_t = 0;
+        // Compute orthogonality based on param
+        // msdfgen: interior points (param in [0,1]) get ortho=0
+        // Endpoints get ortho = |dot(tangent.normalize(), approach.normalize())|
+        var ortho: f64 = 0.0;
+        if (best_param < 0.0 or best_param > 1.0) {
+            if (best_param < 0.5) {
+                // Closer to start
+                const dir = self.direction(0).normalize();
+                const qa_norm = if (qa.length() > 0) qa.normalize() else Vec2.init(0, 0);
+                ortho = @abs(dir.dot(qa_norm));
+            } else {
+                // Closer to end
+                const dir = self.direction(1).normalize();
+                const qb_norm = if (qb.length() > 0) qb.normalize() else Vec2.init(0, 0);
+                ortho = @abs(dir.dot(qb_norm));
+            }
         }
 
-        const dist_1_sq = origin.distanceSquared(self.p3);
-        if (dist_1_sq < final_best_dist_sq) {
-            final_best_dist_sq = dist_1_sq;
-            final_best_t = 1;
-        }
-
-        // Compute final signed distance
-        const closest = self.point(final_best_t);
-        const qp = closest.sub(origin); // point - origin
-        const final_dist = @sqrt(final_best_dist_sq);
-
-        // Determine sign using cross product - matches msdfgen exactly
-        // msdfgen uses different vectors for endpoints vs interior:
-        // - t=0: cross(p1-p0, p0-origin)
-        // - t=1: cross(p3-p2, p3-origin)
-        // - interior: cross(direction(t), point(t)-origin)
-        const cross_val = if (final_best_t <= 0.0) blk: {
-            // Start point: use first control leg
-            const ab_cross = self.p1.sub(self.p0);
-            const qa_cross = self.p0.sub(origin);
-            break :blk ab_cross.cross(qa_cross);
-        } else if (final_best_t >= 1.0) blk: {
-            // End point: use last control leg
-            const cd = self.p3.sub(self.p2);
-            const qd = self.p3.sub(origin);
-            break :blk cd.cross(qd);
-        } else blk: {
-            // Interior: use actual tangent
-            const tangent_cross = self.direction(final_best_t);
-            break :blk tangent_cross.cross(qp);
-        };
-
-        const sign: f64 = if (cross_val >= 0) 1.0 else -1.0;
-
-        // Orthogonality = |dot(tangent, approach_dir)|
-        // 0 = perpendicular (best), 1 = parallel (worst)
-        const tangent = self.direction(final_best_t);
-        const ortho = if (final_dist == 0) 0.0 else @abs(tangent.normalize().dot(qp.normalize()));
-
-        return DistanceResult.init(SignedDistance.init(sign * final_dist, ortho), final_best_t);
+        return DistanceResult.init(SignedDistance.init(min_distance, ortho), best_param);
     }
 
     /// Get the second derivative of the curve at parameter t.

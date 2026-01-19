@@ -401,6 +401,13 @@ fn sortRoots(result: *PolynomialRoots) void {
     }
 }
 
+/// Returns the sign of a value, but never returns 0.
+/// Returns 1 for non-negative values, -1 for negative values.
+/// This matches msdfgen's nonZeroSign function.
+pub fn nonZeroSign(x: f64) f64 {
+    return if (x >= 0) 1.0 else -1.0;
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
