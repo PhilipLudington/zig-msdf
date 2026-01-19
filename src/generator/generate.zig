@@ -443,13 +443,22 @@ fn computeChannelDistancesSingleContour(shape: Shape, point: Vec2) [3]f64 {
         edge_mod.distanceToPseudoDistance(e, point, &min_blue, blue_param);
     }
 
-    // Negate distances to match MSDF convention:
-    // Our signed distance calculation produces negative for inside CCW contours,
-    // but MSDF convention expects positive for inside (maps to bright pixels).
+    // Negate distances to convert from edge convention to MSDF convention.
+    //
+    // Edge geometry convention (from signedDistance):
+    //   - For CCW contours: inside = POSITIVE (point is to the right of edges going CCW)
+    //   - For CW contours: inside = NEGATIVE (point is to the left of edges going CW)
+    //
+    // MSDF convention (what distanceToPixel expects):
+    //   - Inside shape = negative distance → bright pixel (value > 0.5)
+    //   - Outside shape = positive distance → dark pixel (value < 0.5)
+    //
+    // For CCW (standard TrueType): negate to get inside=negative → bright ✓
+    // For CW (CFF fonts): negate gives inside=positive → dark ✗
+    //   → Use invert_distances=true to negate again, restoring inside=negative → bright ✓
     const r = -min_red.distance;
     const g = -min_green.distance;
     const b = -min_blue.distance;
-
     return .{ r, g, b };
 }
 
@@ -605,6 +614,7 @@ fn protectCorners(stencil: []u8, width: u32, height: u32, shape: Shape, transfor
 
 /// Protect pixels near the shape edge where channels agree.
 /// Only protects edge pixels that don't have channel disagreement about inside/outside.
+/// Does NOT protect pixels that contradict their neighborhood (junction artifacts).
 fn protectEdges(stencil: []u8, bitmap: *MsdfBitmap, protection_radius: f64) void {
     _ = protection_radius;
 
@@ -629,17 +639,66 @@ fn protectEdges(stencil: []u8, bitmap: *MsdfBitmap, protection_radius: f64) void
             const g_inside = g > threshold;
             const b_inside = b > threshold;
 
-            // All channels agree - this is a natural edge pixel, protect it
+            // All channels agree - this might be a natural edge pixel
             if ((r_inside and g_inside and b_inside) or (!r_inside and !g_inside and !b_inside)) {
                 const med = median3(r, g, b);
                 // Only protect if near the boundary (not deep inside or outside)
                 if (med >= 90 and med <= 166) {
-                    stencil[idx] |= StencilFlags.PROTECTED;
+                    // Check if this pixel contradicts its neighborhood (junction artifact)
+                    // Don't protect if most neighbors disagree about inside/outside
+                    if (!isJunctionArtifact(bitmap, x, y, med)) {
+                        stencil[idx] |= StencilFlags.PROTECTED;
+                    }
                 }
             }
             // If channels disagree, don't protect - let clash detection decide
         }
     }
+}
+
+/// Detect if a pixel is a junction artifact - a pixel whose median contradicts
+/// the majority of its neighbors. This catches holes at junctions where multiple
+/// contours meet (e.g., the waist of "8" or inner loops of "@").
+fn isJunctionArtifact(bitmap: *MsdfBitmap, x: u32, y: u32, my_med: u8) bool {
+    const threshold: u8 = 127;
+    const my_inside = my_med > threshold;
+
+    var neighbor_count: u32 = 0;
+    var disagree_count: u32 = 0;
+
+    const offsets = [_][2]i32{
+        .{ -1, -1 }, .{ 0, -1 }, .{ 1, -1 },
+        .{ -1, 0 },              .{ 1, 0 },
+        .{ -1, 1 },  .{ 0, 1 },  .{ 1, 1 },
+    };
+
+    for (offsets) |off| {
+        const nx_i = @as(i32, @intCast(x)) + off[0];
+        const ny_i = @as(i32, @intCast(y)) + off[1];
+
+        if (nx_i < 0 or nx_i >= @as(i32, @intCast(bitmap.width)) or
+            ny_i < 0 or ny_i >= @as(i32, @intCast(bitmap.height)))
+        {
+            continue;
+        }
+
+        const nx = @as(u32, @intCast(nx_i));
+        const ny = @as(u32, @intCast(ny_i));
+        const n_rgb = bitmap.getPixel(nx, ny);
+        const n_med = median3(n_rgb[0], n_rgb[1], n_rgb[2]);
+        const n_inside = n_med > threshold;
+
+        neighbor_count += 1;
+        if (n_inside != my_inside) {
+            disagree_count += 1;
+        }
+    }
+
+    if (neighbor_count < 5) return false;
+
+    // Junction artifact: majority of neighbors (5+ out of 8) disagree about inside/outside
+    // This indicates a pixel that's "stuck" on the wrong side at a junction
+    return disagree_count >= 5;
 }
 
 /// Detect if a pixel's median value is isolated (contradicts all neighbors).
@@ -692,9 +751,11 @@ fn detectIsolatedMedianArtifact(bitmap: *MsdfBitmap, x: u32, y: u32, my_med: u8)
     const avg_neighbor_med = total_neighbor_med / neighbor_count;
     const med_diff = if (my_med > avg_neighbor_med) my_med - @as(u8, @intCast(avg_neighbor_med)) else @as(u8, @intCast(avg_neighbor_med)) - my_med;
 
-    // Must disagree with at least 6 of 8 neighbors AND have large median difference
-    // This ensures we only catch true isolated anomalies, not edge transitions
-    return agree_count <= 2 and med_diff > 60;
+    // Isolated artifact detection:
+    // 1. Must disagree with majority of neighbors (at least 6 of 8)
+    // 2. Must have noticeable median difference (>30) to avoid edge transitions
+    // Lowered from 60 to 30 to catch junction artifacts with moderate difference
+    return agree_count <= 2 and med_diff > 30;
 }
 
 /// Detect pixels that clash with neighbors and need correction.
@@ -1099,7 +1160,7 @@ pub fn calculateTransformWithRange(shape_bounds: Bounds, width: u32, height: u32
 /// Calculate the transform using msdfgen's autoframe algorithm with RANGE_PX mode.
 ///
 /// This matches msdfgen's behavior with `-autoframe -pxrange N` flags:
-/// 1. Enlarge the frame by 2*pxRange for scale calculation
+/// 1. Enlarge the frame by 2*pxRange for scale calculation (bigger scale = bigger glyph)
 /// 2. Calculate scale to fit shape in enlarged frame (preserving aspect ratio)
 /// 3. Adjust translation to shift glyph inward by pxRange/scale
 ///
@@ -1123,42 +1184,51 @@ pub fn calculateMsdfgenAutoframe(shape_bounds: Bounds, width: u32, height: u32, 
     const dims_x = r - l;
     const dims_y = t - b;
 
-    // Available area: shrink by pxRange to leave room for the distance field border
-    // This matches msdfgen's behavior with -autoframe -noemnormalize
-    const available_x = @as(f64, @floatFromInt(width)) - px_range;
-    const available_y = @as(f64, @floatFromInt(height)) - px_range;
+    // msdfgen's Range(px_range) creates lower = -px_range/2, upper = px_range/2
+    // Then frame += 2*pxRange.lower means frame += 2*(-px_range/2) = frame - px_range
+    // So the effective frame is (width - px_range, height - px_range)
+    const frame_x = @as(f64, @floatFromInt(width)) - px_range;
+    const frame_y = @as(f64, @floatFromInt(height)) - px_range;
 
     var scale: f64 = 1.0;
     var translate = Vec2.zero;
 
     if (dims_x > 0 and dims_y > 0) {
-        // Scale to fit glyph in available area (maintain aspect ratio)
-        const scale_x = available_x / dims_x;
-        const scale_y = available_y / dims_y;
-        scale = @min(scale_x, scale_y);
+        // msdfgen's aspect ratio check and scale/translate calculation
+        // if dims.x * frame.y < dims.y * frame.x => height-constrained
+        // else => width-constrained
+        if (dims_x * frame_y < dims_y * frame_x) {
+            // Height-constrained: scale based on height
+            scale = frame_y / dims_y;
+            // Center horizontally: 0.5 * (frame.x/frame.y * dims.y - dims.x) - l
+            translate.x = 0.5 * (frame_x / frame_y * dims_y - dims_x) - l;
+            translate.y = -b;
+        } else {
+            // Width-constrained: scale based on width
+            scale = frame_x / dims_x;
+            // Center vertically: 0.5 * (frame.y/frame.x * dims.x - dims.y) - b
+            translate.x = -l;
+            translate.y = 0.5 * (frame_y / frame_x * dims_x - dims_y) - b;
+        }
 
-        // Calculate scaled dimensions
-        const scaled_w = dims_x * scale;
-        const scaled_h = dims_y * scale;
-
-        // Center the scaled glyph in the full bitmap
-        const offset_x = (@as(f64, @floatFromInt(width)) - scaled_w) / 2.0;
-        const offset_y = (@as(f64, @floatFromInt(height)) - scaled_h) / 2.0;
-
-        // Translate: offset_in_pixels / scale - shape_origin
-        translate.x = offset_x / scale - l;
-        translate.y = offset_y / scale - b;
+        // msdfgen does: translate -= pxRange.lower/scale
+        // where pxRange.lower = -px_range/2, so this is: translate += (px_range/2)/scale
+        translate.x += (px_range / 2.0) / scale;
+        translate.y += (px_range / 2.0) / scale;
     } else if (dims_x > 0) {
-        scale = available_x / dims_x;
-        const offset_x = (@as(f64, @floatFromInt(width)) - dims_x * scale) / 2.0;
-        translate.x = offset_x / scale - l;
+        scale = frame_x / dims_x;
+        translate.x = -l + (px_range / 2.0) / scale;
         translate.y = -b;
     } else if (dims_y > 0) {
-        scale = available_y / dims_y;
-        const offset_y = (@as(f64, @floatFromInt(height)) - dims_y * scale) / 2.0;
+        scale = frame_y / dims_y;
         translate.x = -l;
-        translate.y = offset_y / scale - b;
+        translate.y = -b + (px_range / 2.0) / scale;
     }
+
+    // Debug output (remove in production)
+    std.debug.print("calculateMsdfgenAutoframe: bounds=({d:.2},{d:.2})-({d:.2},{d:.2}) dims=({d:.2},{d:.2}) frame=({d:.2},{d:.2}) scale={d:.6} translate=({d:.4},{d:.4})\n", .{
+        l, b, r, t, dims_x, dims_y, frame_x, frame_y, scale, translate.x, translate.y
+    });
 
     // Return standard transform - let generateMsdf flip Y for standard image output
     return Transform.init(scale, translate);

@@ -32,7 +32,7 @@ test "MSDF generation is deterministic" {
     const allocator = std.testing.allocator;
 
     // Create a simple shape
-    // CW winding order (matches TrueType convention): up, right, down, left
+    // CCW winding order (matches TrueType convention for outer contours): up, right, down, left
     var edges = try allocator.alloc(EdgeSegment, 4);
     edges[0] = EdgeSegment{ .linear = LinearSegment.init(Vec2.init(10, 10), Vec2.init(10, 90)) };
     edges[1] = EdgeSegment{ .linear = LinearSegment.init(Vec2.init(10, 90), Vec2.init(90, 90)) };
@@ -55,7 +55,7 @@ test "MSDF generation is deterministic" {
     var bitmap1 = try msdf.generate.generateMsdf(allocator, shape1, 32, 32, 4.0, transform, .{});
     defer bitmap1.deinit();
 
-    // Create the same shape again (CW winding order)
+    // Create the same shape again (CCW winding order)
     var edges2 = try allocator.alloc(EdgeSegment, 4);
     edges2[0] = EdgeSegment{ .linear = LinearSegment.init(Vec2.init(10, 10), Vec2.init(10, 90)) };
     edges2[1] = EdgeSegment{ .linear = LinearSegment.init(Vec2.init(10, 90), Vec2.init(90, 90)) };
@@ -84,7 +84,7 @@ test "MSDF generation is deterministic" {
 test "distance field produces continuous output" {
     const allocator = std.testing.allocator;
 
-    // Create a large circle-like shape using many edges (CW winding order)
+    // Create a large circle-like shape using many edges (CCW winding order)
     const num_edges = 16;
     var edges = try allocator.alloc(EdgeSegment, num_edges);
 
@@ -93,7 +93,7 @@ test "distance field produces continuous output" {
     const radius: f64 = 40;
 
     for (0..num_edges) |i| {
-        // Use negative angles for CW winding
+        // Use negative angles for CCW winding (going clockwise in angle = counter-clockwise in path)
         const angle1 = -@as(f64, @floatFromInt(i)) * 2.0 * std.math.pi / @as(f64, num_edges);
         const angle2 = -@as(f64, @floatFromInt(i + 1)) * 2.0 * std.math.pi / @as(f64, num_edges);
 
@@ -147,7 +147,7 @@ test "distance field produces continuous output" {
 test "center of square is inside (high pixel value)" {
     const allocator = std.testing.allocator;
 
-    // Create a square centered in the output (CW winding order)
+    // Create a square centered in the output (CCW winding order)
     var edges = try allocator.alloc(EdgeSegment, 4);
     edges[0] = EdgeSegment{ .linear = LinearSegment.init(Vec2.init(20, 20), Vec2.init(20, 80)) };
     edges[1] = EdgeSegment{ .linear = LinearSegment.init(Vec2.init(20, 80), Vec2.init(80, 80)) };
@@ -178,7 +178,7 @@ test "center of square is inside (high pixel value)" {
 test "corner of output is outside (low pixel value)" {
     const allocator = std.testing.allocator;
 
-    // Create a small centered square (CW winding order)
+    // Create a small centered square (CCW winding order)
     // Use a fixed transform that guarantees corners are outside
     var edges = try allocator.alloc(EdgeSegment, 4);
     edges[0] = EdgeSegment{ .linear = LinearSegment.init(Vec2.init(20, 20), Vec2.init(20, 80)) };
@@ -217,7 +217,7 @@ test "corner of output is outside (low pixel value)" {
 test "MSDF has channel differences at corners" {
     const allocator = std.testing.allocator;
 
-    // Create a square with fixed transform to ensure channel differences at corners (CW winding order)
+    // Create a square with fixed transform to ensure channel differences at corners (CCW winding order)
     var edges = try allocator.alloc(EdgeSegment, 4);
     edges[0] = EdgeSegment{ .linear = LinearSegment.init(Vec2.init(10, 10), Vec2.init(10, 90)) };
     edges[1] = EdgeSegment{ .linear = LinearSegment.init(Vec2.init(10, 90), Vec2.init(90, 90)) };
@@ -275,7 +275,7 @@ test "MSDF has channel differences at corners" {
 test "very small shape produces valid output" {
     const allocator = std.testing.allocator;
 
-    // Create a tiny triangle (CW winding order)
+    // Create a tiny triangle (CCW winding order)
     var edges = try allocator.alloc(EdgeSegment, 3);
     edges[0] = EdgeSegment{ .linear = LinearSegment.init(Vec2.init(0, 0), Vec2.init(0.5, 1)) };
     edges[1] = EdgeSegment{ .linear = LinearSegment.init(Vec2.init(0.5, 1), Vec2.init(1, 0)) };
@@ -313,7 +313,7 @@ test "very small shape produces valid output" {
 test "shape with quadratic curves produces valid output" {
     const allocator = std.testing.allocator;
 
-    // Create an arch shape with quadratic curves (CW winding order)
+    // Create an arch shape with quadratic curves (CCW winding order)
     var edges = try allocator.alloc(EdgeSegment, 3);
     edges[0] = EdgeSegment{ .quadratic = QuadraticSegment.init(
         Vec2.init(0, 0),

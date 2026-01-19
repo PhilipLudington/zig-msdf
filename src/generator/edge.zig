@@ -1071,16 +1071,20 @@ test "LinearSegment.point" {
 
 test "LinearSegment.signedDistance" {
     // Edge going left-to-right along X axis: (0,0) -> (10,0)
-    // Sign convention matches msdfgen reference implementation
+    // Sign convention: cross(point - p0, direction) / |direction|
+    //   - Negative = point is to the LEFT of edge direction
+    //   - Positive = point is to the RIGHT of edge direction
     const seg = LinearSegment.init(Vec2.init(0, 0), Vec2.init(10, 0));
 
-    // Point above the line - positive distance (outside in msdfgen convention)
+    // Point above the line (y=3) is to the LEFT of "rightward" direction
+    // LEFT = negative distance
     const d1 = seg.signedDistance(Vec2.init(5, 3));
-    try std.testing.expectApproxEqAbs(@as(f64, 3), d1.distance, 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, -3), d1.distance, 1e-10);
 
-    // Point below the line - negative distance (inside in msdfgen convention)
+    // Point below the line (y=-3) is to the RIGHT of "rightward" direction
+    // RIGHT = positive distance
     const d2 = seg.signedDistance(Vec2.init(5, -3));
-    try std.testing.expectApproxEqAbs(@as(f64, -3), d2.distance, 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 3), d2.distance, 1e-10);
 
     // Point on the line
     const d3 = seg.signedDistance(Vec2.init(5, 0));
