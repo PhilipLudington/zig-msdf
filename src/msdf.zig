@@ -168,21 +168,58 @@ pub const MsdfError = error{
     UnsupportedFormat,
 };
 
-/// Detect if a font has inverted winding order.
+/// Detect if a font has inverted winding order (CW outer contours instead of CCW).
 ///
-/// DEPRECATED: The MSDF generation pipeline now calls `orientContours()` which
-/// automatically normalizes all contours to standard winding (CCW outer, CW holes).
-/// As a result, `invert_distances` is no longer needed and this function always
-/// returns false.
+/// Standard font convention (TrueType): outer contours are CCW, holes are CW.
+/// CFF fonts sometimes use the opposite convention (CW outer, CCW holes).
 ///
-/// This function is kept for backwards compatibility. If you're seeing inverted
-/// output, the issue is likely in your shader or rendering code, not the font.
+/// This function checks the winding of a simple glyph's outer contour.
+/// Returns true if the font needs distance inversion (has CW outer contours).
 pub fn detectInvertedWinding(allocator: std.mem.Allocator, font: Font) bool {
-    // orientContours() normalizes all fonts to standard winding, so no font
-    // should need invert_distances anymore.
-    _ = allocator;
-    _ = font;
-    return false;
+    // Try to parse a simple character to check winding
+    var shape = getGlyphShape(allocator, font, 'O') catch {
+        // Try 'A' as fallback
+        return detectInvertedWindingChar(allocator, font, 'A');
+    };
+    defer shape.deinit();
+
+    if (shape.contours.len == 0) {
+        return detectInvertedWindingChar(allocator, font, 'A');
+    }
+
+    // Find the outermost contour (largest absolute winding area)
+    var max_area: f64 = 0;
+    var outer_winding: f64 = 0;
+    for (shape.contours) |c| {
+        const w = c.winding();
+        if (@abs(w) > max_area) {
+            max_area = @abs(w);
+            outer_winding = w;
+        }
+    }
+
+    // Standard convention: outer contour has positive winding (CCW)
+    // If outer has negative winding (CW), font needs inversion
+    return outer_winding < 0;
+}
+
+fn detectInvertedWindingChar(allocator: std.mem.Allocator, font: Font, char: u21) bool {
+    var shape = getGlyphShape(allocator, font, char) catch return false;
+    defer shape.deinit();
+
+    if (shape.contours.len == 0) return false;
+
+    var max_area: f64 = 0;
+    var outer_winding: f64 = 0;
+    for (shape.contours) |c| {
+        const w = c.winding();
+        if (@abs(w) > max_area) {
+            max_area = @abs(w);
+            outer_winding = w;
+        }
+    }
+
+    return outer_winding < 0;
 }
 
 /// Get the raw shape (contours) for a glyph without generating MSDF.
@@ -287,9 +324,18 @@ pub fn generateGlyph(
     }
     defer shape.deinit();
 
-    // Orient contours to standard winding (CCW outer, CW holes)
-    // This fixes fonts with inconsistent or inverted winding like SF Mono
-    shape.orientContours();
+    // Apply edge coloring for MSDF.
+    // msdfgen does not normalize contour winding - it handles both CW and CCW
+    // contours natively through the signed distance calculation.
+    // The sign of the distance comes from the edge direction, which correctly
+    // identifies inside/outside regardless of winding order.
+    coloring.colorEdgesSimple(&shape);
+
+    // NOTE: We intentionally do NOT call orientContours() here.
+    // msdfgen preserves the original font winding and the signed distance
+    // calculation handles inside/outside correctly for both CW and CCW contours.
+    // Normalizing to CCW would flip the signed distance signs, breaking the
+    // distance-to-pixel conversion which expects the original font convention.
 
     // Get glyph metrics
     const advance_width = hmtx.getAdvanceWidth(glyph_index) catch return MsdfError.InvalidHmtxTable;
@@ -297,9 +343,6 @@ pub fn generateGlyph(
 
     // Calculate glyph bounding box
     const shape_bounds = shape.bounds();
-
-    // Apply edge coloring for MSDF
-    coloring.colorEdgesSimple(&shape);
 
     // Calculate transform to fit glyph in output size
     const size = options.size;
@@ -316,6 +359,26 @@ pub fn generateGlyph(
     // Use the actual transform scale (matches msdfgen: range = pxRange / scale)
     const range_in_font_units = options.range / transform.scale;
 
+    // Auto-detect if this font has inverted winding (CW outer contours)
+    // CFF fonts often use opposite winding from TrueType
+    const needs_inversion = if (options.invert_distances)
+        true
+    else blk: {
+        // Check the current shape's outer contour winding
+        var max_area: f64 = 0;
+        var outer_winding: f64 = 0;
+        for (shape.contours) |c| {
+            const w = c.winding();
+            if (@abs(w) > max_area) {
+                max_area = @abs(w);
+                outer_winding = w;
+            }
+        }
+        // Outer contour should be CCW (positive winding)
+        // If CW (negative), we need to invert distances
+        break :blk outer_winding < 0;
+    };
+
     // Generate MSDF (pass invert_distances to handle fonts with CW outer contours)
     const bitmap = generate.generateMsdf(
         allocator,
@@ -324,7 +387,7 @@ pub fn generateGlyph(
         size,
         range_in_font_units,
         transform,
-        .{ .invert_distances = options.invert_distances },
+        .{ .invert_distances = needs_inversion },
     ) catch return MsdfError.OutOfMemory;
 
     // Apply error correction if enabled

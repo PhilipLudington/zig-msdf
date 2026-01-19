@@ -320,4 +320,127 @@ pub fn build(b: *std.Build) void {
 
     const cff_orient_debug_step = b.step("cff-orient-debug", "Debug CFF font contour orientation");
     cff_orient_debug_step.dependOn(&run_cff_orient_debug.step);
+
+    // Edge artifact diagnostic tool
+    const edge_artifact_diag_exe = b.addExecutable(.{
+        .name = "edge_artifact_diagnostic",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/edge_artifact_diagnostic.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(edge_artifact_diag_exe);
+
+    const run_edge_artifact_diag = b.addRunArtifact(edge_artifact_diag_exe);
+    run_edge_artifact_diag.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_edge_artifact_diag.addArgs(args);
+    }
+
+    const edge_artifact_diag_step = b.step("edge-artifact-diag", "Diagnose MSDF edge artifacts");
+    edge_artifact_diag_step.dependOn(&run_edge_artifact_diag.step);
+
+    // Interior artifact diagnostic tool
+    const interior_artifact_diag_exe = b.addExecutable(.{
+        .name = "interior_artifact_diagnostic",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/interior_artifact_diagnostic.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(interior_artifact_diag_exe);
+
+    const run_interior_artifact_diag = b.addRunArtifact(interior_artifact_diag_exe);
+    run_interior_artifact_diag.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_interior_artifact_diag.addArgs(args);
+    }
+
+    const interior_artifact_diag_step = b.step("interior-artifact-diag", "Diagnose MSDF interior artifacts");
+    interior_artifact_diag_step.dependOn(&run_interior_artifact_diag.step);
+
+    // JetBrains Mono S debug tool
+    const debug_jetbrains_s_exe = b.addExecutable(.{
+        .name = "debug_jetbrains_s",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_jetbrains_s.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_jetbrains_s_exe);
+
+    const run_debug_jetbrains_s = b.addRunArtifact(debug_jetbrains_s_exe);
+    run_debug_jetbrains_s.step.dependOn(b.getInstallStep());
+
+    const debug_jetbrains_s_step = b.step("debug-jetbrains-s", "Debug JetBrains Mono S character edge coloring");
+    debug_jetbrains_s_step.dependOn(&run_debug_jetbrains_s.step);
+
+    // Compare MSDF tool
+    const compare_msdf_exe = b.addExecutable(.{
+        .name = "compare_msdf",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/compare_msdf.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    b.installArtifact(compare_msdf_exe);
+
+    const run_compare_msdf = b.addRunArtifact(compare_msdf_exe);
+    run_compare_msdf.step.dependOn(b.getInstallStep());
+
+    const compare_msdf_step = b.step("compare-msdf", "Compare zig-msdf and msdfgen output");
+    compare_msdf_step.dependOn(&run_compare_msdf.step);
+
+    // Debug pixel tool
+    const debug_pixel_exe = b.addExecutable(.{
+        .name = "debug_pixel",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_pixel.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_pixel_exe);
+
+    const run_debug_pixel = b.addRunArtifact(debug_pixel_exe);
+    run_debug_pixel.step.dependOn(b.getInstallStep());
+
+    const debug_pixel_step = b.step("debug-pixel", "Debug per-pixel distance calculations");
+    debug_pixel_step.dependOn(&run_debug_pixel.step);
+
+    // Debug S coloring
+    const debug_s_coloring_exe = b.addExecutable(.{
+        .name = "debug_s_coloring",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_s_coloring.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_s_coloring_exe);
+
+    const run_debug_s_coloring = b.addRunArtifact(debug_s_coloring_exe);
+    run_debug_s_coloring.step.dependOn(b.getInstallStep());
+
+    const debug_s_coloring_step = b.step("debug-s-coloring", "Debug S character edge coloring");
+    debug_s_coloring_step.dependOn(&run_debug_s_coloring.step);
 }

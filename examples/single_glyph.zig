@@ -49,10 +49,12 @@ pub fn main() !void {
     std.debug.print("Character: {u} (U+{X:0>4})\n", .{ character, character });
 
     // Generate MSDF for the character
+    // Use msdfgen_autoframe=true for better msdfgen compatibility
     var result = msdf.generateGlyph(allocator, font, character, .{
         .size = 64,
         .padding = 4,
         .range = 4.0,
+        .msdfgen_autoframe = true,
     }) catch |err| {
         std.debug.print("Error generating MSDF: {}\n", .{err});
         return;

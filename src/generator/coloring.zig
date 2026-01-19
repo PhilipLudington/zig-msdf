@@ -102,6 +102,9 @@ fn colorContourWithState(contour: *Contour, angle_threshold: f64, initial_color:
         }
     }
 
+    // Debug: log corner count for analysis (uncomment for debugging)
+    // std.debug.print("Contour {d} edges, {d} corners detected\n", .{ edge_count, corners_len });
+
     // If no corners or curvature changes detected (smooth contour),
     // switch color and use same color for all edges (matching msdfgen)
     if (corners_len == 0) {
@@ -110,6 +113,12 @@ fn colorContourWithState(contour: *Contour, angle_threshold: f64, initial_color:
             e.setColor(color);
         }
         return color;
+    }
+
+    // "Teardrop" case: exactly 1 corner
+    // msdfgen distributes 3 colors symmetrically around the contour
+    if (corners_len == 1) {
+        return colorTeardropContour(contour, corners_buffer[0], &color);
     }
 
     // Color edges between corners/boundaries
@@ -191,6 +200,58 @@ fn switchColor(color: EdgeColor) EdgeColor {
     };
 }
 
+/// Symmetrical trichotomy function from msdfgen.
+/// For each position < n, returns -1, 0, or 1 depending on whether the position
+/// is closer to the beginning, middle, or end respectively.
+/// The total for positions 0 through n-1 will be zero (balanced).
+fn symmetricalTrichotomy(position: usize, n: usize) i32 {
+    if (n <= 1) return 0;
+    const pos_f: f64 = @floatFromInt(position);
+    const n_f: f64 = @floatFromInt(n - 1);
+    // msdfgen formula: int(3 + 2.875 * position / (n-1) - 1.4375 + 0.5) - 3
+    const result = @as(i32, @intFromFloat(3.0 + 2.875 * pos_f / n_f - 1.4375 + 0.5)) - 3;
+    return result;
+}
+
+/// Handle the "teardrop" case: exactly 1 corner detected.
+/// msdfgen distributes 3 colors (color1, WHITE, color2) symmetrically around the contour.
+/// This ensures good channel diversity even for smooth S-curves with only one corner.
+fn colorTeardropContour(contour: *Contour, corner: usize, color: *EdgeColor) EdgeColor {
+    const edge_count = contour.edges.len;
+
+    // Get three colors: color1, WHITE, color2
+    var colors: [3]EdgeColor = undefined;
+    color.* = switchColor(color.*);
+    colors[0] = color.*;
+    colors[1] = .white;
+    color.* = switchColor(color.*);
+    colors[2] = color.*;
+
+    if (edge_count >= 3) {
+        // Distribute colors symmetrically using trichotomy
+        // Position 0 (at corner) gets middle color (WHITE), positions before get colors[0],
+        // positions after get colors[2]
+        const m = edge_count;
+        for (0..m) |i| {
+            const index = (corner + i) % m;
+            // trichotomy returns -1 (beginning), 0 (middle), or 1 (end)
+            const trich = symmetricalTrichotomy(i, m);
+            // Map -1 -> colors[0], 0 -> colors[1], 1 -> colors[2]
+            const color_idx: usize = @intCast(trich + 1);
+            contour.edges[index].setColor(colors[color_idx]);
+        }
+    } else if (edge_count == 2) {
+        // Two edges: give them different colors
+        contour.edges[corner].setColor(colors[0]);
+        contour.edges[(corner + 1) % 2].setColor(colors[2]);
+    } else if (edge_count == 1) {
+        // Single edge: use white
+        contour.edges[0].setColor(.white);
+    }
+
+    return color.*;
+}
+
 /// Color edges between identified corners with persistent color state.
 /// Matches msdfgen's algorithm: ALL edges between corners get the SAME color,
 /// and we only switch color at corners.
@@ -199,6 +260,19 @@ fn colorBetweenCornersWithState(contour: *Contour, corners: []const usize, initi
     const edge_count = contour.edges.len;
     const corner_count = corners.len;
 
+    // For smooth curves with few corners (like S-curves), we need better color diversity.
+    // With only 2-4 corners and many edges, each spline gets just one color, leading to
+    // poor channel diversity. Solution: Use trichotomy distribution for better spread.
+    //
+    // NOTE: Disabled for now to test msdfgen compatibility
+    // Check if we have too few corners relative to edges (need ~3 colors per spline)
+    // const avg_spline_size = edge_count / corner_count;
+    // if (corner_count <= 4 and avg_spline_size >= 4) {
+    //     // Use trichotomy-style distribution for better diversity
+    //     return colorFewCornersTrichotomy(contour, corners, initial_color);
+    // }
+
+    // Standard algorithm for 3+ corners
     // Switch color before starting (matching msdfgen)
     var color = switchColor(initial_color);
     const contour_initial_color = color;
@@ -229,6 +303,55 @@ fn colorBetweenCornersWithState(contour: *Contour, corners: []const usize, initi
     }
 
     return color;
+}
+
+/// Special handling for contours with few corners but many edges.
+/// Distributes 3 colors using trichotomy within each spline for better MSDF diversity.
+/// This handles S-curves, smooth arcs, and other shapes with poor natural corner distribution.
+fn colorFewCornersTrichotomy(contour: *Contour, corners: []const usize, initial_color: EdgeColor) EdgeColor {
+    const edge_count = contour.edges.len;
+    const corner_count = corners.len;
+
+    // Get three colors
+    const color = switchColor(initial_color);
+    const colors = [3]EdgeColor{
+        color,
+        switchColor(color),
+        switchColor(switchColor(color)),
+    };
+
+    // For each spline (section between corners), distribute colors using trichotomy
+    for (0..corner_count) |spline_idx| {
+        const start_corner = corners[spline_idx];
+        const end_corner = corners[(spline_idx + 1) % corner_count];
+
+        // Calculate spline size
+        const spline_size = if (end_corner > start_corner)
+            end_corner - start_corner
+        else
+            edge_count - start_corner + end_corner;
+
+        if (spline_size == 0) continue;
+
+        // Rotate color palette for each spline for better overall diversity
+        const color_offset = spline_idx % 3;
+        const spline_colors = [3]EdgeColor{
+            colors[color_offset],
+            colors[(color_offset + 1) % 3],
+            colors[(color_offset + 2) % 3],
+        };
+
+        // Distribute colors within this spline using trichotomy
+        for (0..spline_size) |i| {
+            const index = (start_corner + i) % edge_count;
+            const trich = symmetricalTrichotomy(i, spline_size);
+            const color_idx: usize = @intCast(trich + 1);
+            contour.edges[index].setColor(spline_colors[color_idx]);
+        }
+    }
+
+    // Return the last color used for state continuity
+    return colors[2];
 }
 
 /// Detect if a junction between two edges forms a corner.
