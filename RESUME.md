@@ -681,3 +681,84 @@ JetBrains Mono S still shows ~63% match rate due to 119 inside/outside disagreem
 1. Investigate pseudo-distance algorithm differences
 2. Compare distance calculations at specific disagreement pixels
 3. Re-enable and refine trichotomy coloring for improved color diversity
+
+---
+
+## SF Mono Rendering Fix (IMPLEMENTED)
+
+**Problem:** SF Mono font showed severe artifacts on curved characters (S, D) while straight-line characters (M, F) rendered correctly. The 'S' character had visible holes/blobs in the curve sections.
+
+### Root Cause
+
+A previous commit attempted to remove `orientContours()` and instead use auto-detection of CW winding with `invert_distances` to handle fonts like SF Mono that have clockwise outer contours.
+
+This approach failed because:
+1. The signed distance calculation fundamentally depends on contour orientation
+2. The sign (inside/outside) is computed based on edge direction during distance calculation
+3. Simply inverting the final distances doesn't fix the underlying geometry issue
+4. Pixels at curve sections got incorrect inside/outside classification
+
+### Investigation
+
+Testing revealed:
+- SF Mono has CW outer contours (negative winding: -949733.95)
+- Geneva has CCW outer contours (positive winding: +1327678.04)
+- Auto-detection correctly identified SF Mono as needing inversion
+- But inversion alone didn't produce correct results - artifacts remained
+
+### Fix Applied
+
+**File:** `src/msdf.zig`
+
+Restored the working approach:
+
+```zig
+// Orient contours to standard winding (CCW outer, CW holes)
+// This fixes fonts with inconsistent or inverted winding like SF Mono
+shape.orientContours();
+
+// Get glyph metrics...
+// Calculate glyph bounding box...
+
+// Apply edge coloring for MSDF
+coloring.colorEdgesSimple(&shape);
+```
+
+Key points:
+1. `orientContours()` normalizes ALL fonts to CCW outer contours
+2. Edge coloring happens AFTER orientation (on normalized contours)
+3. The `invert_distances` option remains for manual override if needed
+4. `detectInvertedWinding()` now always returns false (deprecated)
+
+### Results
+
+| Font | Character | Before | After |
+|------|-----------|--------|-------|
+| SF Mono | S | Artifacts in curves | Clean rendering |
+| SF Mono | M, D, F | OK | OK |
+| Geneva | A | OK | OK |
+
+- All tests passing (94/94)
+- SF Mono S renders without artifacts
+- Geneva and other CCW fonts continue to work correctly
+
+### Why orientContours() Works
+
+The `orientContours()` function:
+1. Calculates winding for each contour
+2. Identifies outer contour (largest area) - should be CCW
+3. Flips CW contours to CCW by reversing edge order
+4. This makes the signed distance calculation consistent across all fonts
+
+The signed distance sign comes from the cross product of the edge direction and the point-to-edge vector. When edges are normalized to CCW:
+- Points inside get negative distance (left of edge direction)
+- Points outside get positive distance (right of edge direction)
+
+---
+
+## Current Status
+
+- **All tests passing:** 94/94
+- **SF Mono:** Renders correctly (S, M, D, F all clean)
+- **Geneva:** Renders correctly (99.7% match with msdfgen for 'A')
+- **Inside/outside agreement:** 100% for tested characters
