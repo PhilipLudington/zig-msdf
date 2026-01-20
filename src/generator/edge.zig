@@ -186,8 +186,8 @@ pub const QuadraticSegment = struct {
 
         // Start with endpoint A (t=0)
         var ep_dir = self.direction(0);
-        // msdfgen: nonZeroSign(crossProduct(qa, epDir)) - qa.cross(ep_dir), not ep_dir.cross(qa)
-        var min_distance = math.nonZeroSign(qa.cross(ep_dir)) * qa.length();
+        // msdfgen: nonZeroSign(crossProduct(epDir, qa)) - ep_dir.cross(qa)
+        var min_distance = math.nonZeroSign(ep_dir.cross(qa)) * qa.length();
         // Projected param for pseudo-distance: can be < 0
         var best_param = -qa.dot(ep_dir) / ep_dir.dot(ep_dir);
 
@@ -196,7 +196,7 @@ pub const QuadraticSegment = struct {
         const dist_b = qb.length();
         if (dist_b < @abs(min_distance)) {
             ep_dir = self.direction(1);
-            min_distance = math.nonZeroSign(qb.cross(ep_dir)) * dist_b;
+            min_distance = math.nonZeroSign(ep_dir.cross(qb)) * dist_b;
             // msdfgen: dotProduct(origin-p[1], epDir)/dotProduct(epDir, epDir)
             const origin_p1 = origin.sub(self.p1);
             best_param = origin_p1.dot(ep_dir) / ep_dir.dot(ep_dir);
@@ -349,8 +349,8 @@ pub const CubicSegment = struct {
 
         // Start with endpoint A (t=0)
         var ep_dir = self.direction(0);
-        // msdfgen: nonZeroSign(crossProduct(qa, epDir)) - qa.cross(ep_dir), not ep_dir.cross(qa)
-        var min_distance = math.nonZeroSign(qa.cross(ep_dir)) * qa.length();
+        // msdfgen: nonZeroSign(crossProduct(epDir, qa)) - ep_dir.cross(qa)
+        var min_distance = math.nonZeroSign(ep_dir.cross(qa)) * qa.length();
         // Projected param for pseudo-distance: can be < 0
         var best_param = -qa.dot(ep_dir) / ep_dir.dot(ep_dir);
 
@@ -359,7 +359,7 @@ pub const CubicSegment = struct {
         const dist_b = qb.length();
         if (dist_b < @abs(min_distance)) {
             ep_dir = self.direction(1);
-            min_distance = math.nonZeroSign(qb.cross(ep_dir)) * dist_b;
+            min_distance = math.nonZeroSign(ep_dir.cross(qb)) * dist_b;
             // msdfgen: dotProduct(epDir-(p[3]-origin), epDir)/dotProduct(epDir, epDir)
             // This matches the msdfgen formula exactly
             const vec_diff = ep_dir.sub(qb);

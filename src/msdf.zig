@@ -287,8 +287,17 @@ pub fn generateGlyph(
     }
     defer shape.deinit();
 
+    // Apply edge coloring for MSDF BEFORE orientation normalization.
+    // This is critical: corner detection depends on edge sequence, and reversing
+    // the contour changes which edges are adjacent, producing different corner
+    // positions and poor color distribution for CW fonts like SF Mono.
+    // By coloring first, we get the natural corner structure, and the colors
+    // are preserved when edges are reversed during orientation.
+    coloring.colorEdgesSimple(&shape);
+
     // Orient contours to standard winding (CCW outer, CW holes)
-    // This fixes fonts with inconsistent or inverted winding like SF Mono
+    // This fixes fonts with inconsistent or inverted winding like SF Mono.
+    // The edge colors assigned above are preserved during reversal.
     shape.orientContours();
 
     // Get glyph metrics
@@ -297,9 +306,6 @@ pub fn generateGlyph(
 
     // Calculate glyph bounding box
     const shape_bounds = shape.bounds();
-
-    // Apply edge coloring for MSDF
-    coloring.colorEdgesSimple(&shape);
 
     // Calculate transform to fit glyph in output size
     const size = options.size;

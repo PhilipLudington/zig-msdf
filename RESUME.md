@@ -756,9 +756,127 @@ The signed distance sign comes from the cross product of the edge direction and 
 
 ---
 
+## Edge Coloring Order Fix - Color BEFORE Orient (IMPLEMENTED)
+
+**Problem:** SF Mono S character had severe artifacts (blobs in curves) while M and F rendered correctly. The root cause was poor color distribution: 29/31 edges were yellow, with only 1 cyan and 1 magenta.
+
+### Root Cause Analysis
+
+When `orientContours()` reverses a CW contour to CCW:
+1. Edge indices change: edge 0 becomes edge 30, edge 1 becomes edge 29, etc.
+2. Corner detection depends on the edge sequence (direction changes between adjacent edges)
+3. The SAME physical corners get detected at DIFFERENT edge indices after reversal
+4. This produces completely different color assignments
+
+**SF Mono S (CW) original corners:** edges 14, 30 → distribution: 15 cyan, 14 magenta, 2 yellow
+**After orientation reversal:** corners at 0, 1, 16, 17 → distribution: 1 cyan, 1 magenta, 29 yellow
+
+The poor distribution (29 yellow) caused artifacts because most of the glyph had the same color.
+
+### Fix Applied
+
+**File:** `src/msdf.zig`
+
+Changed the order of operations:
+- **OLD:** orient → color (colors assigned to reversed edge structure)
+- **NEW:** color → orient (colors assigned to original structure, preserved during reversal)
+
+```zig
+// Apply edge coloring for MSDF BEFORE orientation normalization.
+// This is critical: corner detection depends on edge sequence, and reversing
+// the contour changes which edges are adjacent, producing different corner
+// positions and poor color distribution for CW fonts like SF Mono.
+coloring.colorEdgesSimple(&shape);
+
+// Orient contours to standard winding (CCW outer, CW holes)
+// The edge colors assigned above are preserved during reversal.
+shape.orientContours();
+```
+
+The edge colors are preserved in the EdgeSegment struct during reversal, so coloring first gives the natural corner structure while orientation normalization still works correctly.
+
+### Results
+
+| Test | Before | After |
+|------|--------|-------|
+| SF Mono S top-left pixel | BLUE (0,0,255) | RED (255,0,0) ✓ |
+| msdfgen SF Mono S top-left | RED (255,0,0) | Match! |
+| Geneva A top-left | (0,0,31) | (0,0,31) ✓ |
+| msdfgen Geneva A top-left | (0,0,32) | Close match |
+| All tests | 94/94 | 94/94 ✓ |
+
+---
+
+## Cross Product Order Fix for Signed Distance (IMPLEMENTED)
+
+**Problem:** zig-msdf was producing complementary/inverted colors compared to msdfgen. Pixel (0,0) showed CYAN where msdfgen showed RED. Inside/outside was completely inverted.
+
+### Root Cause
+
+The cross product operand order in the signed distance calculation was reversed for endpoint cases in both QuadraticSegment and CubicSegment.
+
+**msdfgen QuadraticSegment::signedDistance (endpoint A):**
+```cpp
+Vector2 epDir = direction(0);
+double minDistance = nonZeroSign(crossProduct(epDir, qa))*qa.length();
+//                                           ^^^^^^^  ^^
+```
+
+**zig-msdf (WRONG):**
+```zig
+var min_distance = math.nonZeroSign(qa.cross(ep_dir)) * qa.length();
+//                                  ^^^^^^^^^^^^^^^^
+```
+
+Since cross product is anti-commutative (`a × b = -(b × a)`), swapping operands inverts the sign.
+
+### Fix Applied
+
+**Files:** `src/generator/edge.zig`
+
+Changed cross product order to match msdfgen for both QuadraticSegment and CubicSegment:
+
+1. **QuadraticSegment endpoint A (line 190):**
+   ```zig
+   // OLD: math.nonZeroSign(qa.cross(ep_dir))
+   // NEW: math.nonZeroSign(ep_dir.cross(qa))
+   ```
+
+2. **QuadraticSegment endpoint B (line 199):**
+   ```zig
+   // OLD: math.nonZeroSign(qb.cross(ep_dir))
+   // NEW: math.nonZeroSign(ep_dir.cross(qb))
+   ```
+
+3. **CubicSegment endpoint A (line 353):**
+   ```zig
+   // OLD: math.nonZeroSign(qa.cross(ep_dir))
+   // NEW: math.nonZeroSign(ep_dir.cross(qa))
+   ```
+
+4. **CubicSegment endpoint B (line 362):**
+   ```zig
+   // OLD: math.nonZeroSign(qb.cross(ep_dir))
+   // NEW: math.nonZeroSign(ep_dir.cross(qb))
+   ```
+
+### Results
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Match rate (SF Mono S) | 3% | **80.8%** |
+| Inside/outside disagreements | 2889 | **14** |
+| All tests | Failing | **Passing** |
+
+The 14 remaining disagreements are at edge artifact locations near corners - expected MSDF behavior.
+
+---
+
 ## Current Status
 
 - **All tests passing:** 94/94
 - **SF Mono:** Renders correctly (S, M, D, F all clean)
-- **Geneva:** Renders correctly (99.7% match with msdfgen for 'A')
-- **Inside/outside agreement:** 100% for tested characters
+- **Geneva:** Renders correctly (close match with msdfgen)
+- **Inside/outside agreement:** 100% for tested characters (except ~14 edge artifacts)
+- **Edge coloring:** Matches msdfgen's color distribution
+- **Cross product order:** Fixed to match msdfgen exactly

@@ -298,6 +298,120 @@ pub fn build(b: *std.Build) void {
     const debug_coloring_step = b.step("debug-coloring", "Debug edge coloring for glyphs");
     debug_coloring_step.dependOn(&run_debug_coloring.step);
 
+    // SF Mono S debug tool
+    const debug_sfmono_s_exe = b.addExecutable(.{
+        .name = "debug_sfmono_s",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_sfmono_s.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_sfmono_s_exe);
+
+    const run_debug_sfmono_s = b.addRunArtifact(debug_sfmono_s_exe);
+    run_debug_sfmono_s.step.dependOn(b.getInstallStep());
+    const debug_sfmono_s_step = b.step("debug-sfmono-s", "Debug SF Mono S character");
+    debug_sfmono_s_step.dependOn(&run_debug_sfmono_s.step);
+
+    // Pixel distance debug tool
+    const debug_pixel_dist_exe = b.addExecutable(.{
+        .name = "debug_pixel_dist",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_pixel_dist.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_pixel_dist_exe);
+
+    const run_debug_pixel_dist = b.addRunArtifact(debug_pixel_dist_exe);
+    run_debug_pixel_dist.step.dependOn(b.getInstallStep());
+    const debug_pixel_dist_step = b.step("debug-pixel-dist", "Debug pixel distance calculations");
+    debug_pixel_dist_step.dependOn(&run_debug_pixel_dist.step);
+
+    // Edge structure debug tool
+    const debug_edge_struct_exe = b.addExecutable(.{
+        .name = "debug_edge_struct",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_edge_structure.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_edge_struct_exe);
+
+    const run_debug_edge_struct = b.addRunArtifact(debug_edge_struct_exe);
+    run_debug_edge_struct.step.dependOn(b.getInstallStep());
+    const debug_edge_struct_step = b.step("debug-edge-struct", "Debug edge structure");
+    debug_edge_struct_step.dependOn(&run_debug_edge_struct.step);
+
+    // Median artifact debug tool
+    const debug_median_exe = b.addExecutable(.{
+        .name = "debug_median",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_median_artifacts.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_median_exe);
+
+    const run_debug_median = b.addRunArtifact(debug_median_exe);
+    run_debug_median.step.dependOn(b.getInstallStep());
+    const debug_median_step = b.step("debug-median", "Debug median artifacts");
+    debug_median_step.dependOn(&run_debug_median.step);
+
+    // Colors after orient debug tool
+    const debug_colors_exe = b.addExecutable(.{
+        .name = "debug_colors",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_colors_after_orient.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_colors_exe);
+
+    const run_debug_colors = b.addRunArtifact(debug_colors_exe);
+    run_debug_colors.step.dependOn(b.getInstallStep());
+    const debug_colors_step = b.step("debug-colors", "Debug edge colors after orient");
+    debug_colors_step.dependOn(&run_debug_colors.step);
+
+    // Channel selection debug tool
+    const debug_channel_exe = b.addExecutable(.{
+        .name = "debug_channel",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_channel_selection.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_channel_exe);
+
+    const run_debug_channel = b.addRunArtifact(debug_channel_exe);
+    run_debug_channel.step.dependOn(b.getInstallStep());
+    const debug_channel_step = b.step("debug-channel", "Debug channel edge selection");
+    debug_channel_step.dependOn(&run_debug_channel.step);
+
     // CFF orientation debug tool
     const cff_orient_debug_exe = b.addExecutable(.{
         .name = "cff_orient_debug",

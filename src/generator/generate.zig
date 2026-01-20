@@ -443,19 +443,9 @@ fn computeChannelDistancesSingleContour(shape: Shape, point: Vec2) [3]f64 {
         edge_mod.distanceToPseudoDistance(e, point, &min_blue, blue_param);
     }
 
-    // Negate distances to convert from edge convention to MSDF convention.
-    //
-    // Edge geometry convention (from signedDistance):
-    //   - For CCW contours: inside = POSITIVE (point is to the right of edges going CCW)
-    //   - For CW contours: inside = NEGATIVE (point is to the left of edges going CW)
-    //
-    // MSDF convention (what distanceToPixel expects):
-    //   - Inside shape = negative distance → bright pixel (value > 0.5)
-    //   - Outside shape = positive distance → dark pixel (value < 0.5)
-    //
-    // For CCW (standard TrueType): negate to get inside=negative → bright ✓
-    // For CW (CFF fonts): negate gives inside=positive → dark ✗
-    //   → Use invert_distances=true to negate again, restoring inside=negative → bright ✓
+    // Negate distances: MSDF convention is negative=inside, positive=outside.
+    // After orientContours() normalizes to CCW, signedDistance gives positive
+    // for inside points. Negate to match MSDF convention.
     const r = -min_red.distance;
     const g = -min_green.distance;
     const b = -min_blue.distance;
