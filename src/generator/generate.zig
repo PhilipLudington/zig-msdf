@@ -601,36 +601,25 @@ fn computeChannelDistancesSingleContour(shape: Shape, point: Vec2) [3]f64 {
     var g_dist = green_selector.computeDistance(point);
     var b_dist = blue_selector.computeDistance(point);
 
-    // WINDING FIX: Only apply when NO perpendicular distance was tracked for a channel.
-    // This handles corners where edge geometry gives wrong inside/outside and no
-    // perpendicular distance was available to correct it.
-    const r_has_perp = std.math.isFinite(red_selector.minNegativePerpendicularDistance) or
-        std.math.isFinite(red_selector.minPositivePerpendicularDistance);
-    const g_has_perp = std.math.isFinite(green_selector.minNegativePerpendicularDistance) or
-        std.math.isFinite(green_selector.minPositivePerpendicularDistance);
-    const b_has_perp = std.math.isFinite(blue_selector.minNegativePerpendicularDistance) or
-        std.math.isFinite(blue_selector.minPositivePerpendicularDistance);
+    // WINDING FIX: Edge geometry can give wrong inside/outside for points far from
+    // the glyph, or for multi-contour shapes where the closest edge is from a different
+    // contour. Always use winding number to ensure correct sign.
+    //
+    // The winding number is the ground truth for inside/outside determination.
+    // Positive distance means inside in edge convention, negative means outside.
+    // If the winding says otherwise, flip the sign.
+    const winding = computeWinding(shape, point);
+    const is_inside = winding != 0;
 
-    // Only apply winding fix for channels without perpendicular distance
-    if (!r_has_perp or !g_has_perp or !b_has_perp) {
-        const winding = computeWinding(shape, point);
-        const is_inside = winding != 0;
+    // Fix sign based on winding for ALL channels
+    if (!is_inside and r_dist > 0) r_dist = -@abs(r_dist);
+    if (is_inside and r_dist < 0) r_dist = @abs(r_dist);
 
-        // In edge convention: positive = inside, negative = outside
-        // Only fix channels that have no perpendicular distance tracked
-        if (!r_has_perp) {
-            if (!is_inside and r_dist > 0) r_dist = -@abs(r_dist);
-            if (is_inside and r_dist < 0) r_dist = @abs(r_dist);
-        }
-        if (!g_has_perp) {
-            if (!is_inside and g_dist > 0) g_dist = -@abs(g_dist);
-            if (is_inside and g_dist < 0) g_dist = @abs(g_dist);
-        }
-        if (!b_has_perp) {
-            if (!is_inside and b_dist > 0) b_dist = -@abs(b_dist);
-            if (is_inside and b_dist < 0) b_dist = @abs(b_dist);
-        }
-    }
+    if (!is_inside and g_dist > 0) g_dist = -@abs(g_dist);
+    if (is_inside and g_dist < 0) g_dist = @abs(g_dist);
+
+    if (!is_inside and b_dist > 0) b_dist = -@abs(b_dist);
+    if (is_inside and b_dist < 0) b_dist = @abs(b_dist);
 
     // Negate distances: MSDF convention is negative=inside, positive=outside.
     // After orientContours() normalizes to CCW, signedDistance gives positive

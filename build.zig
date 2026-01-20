@@ -317,6 +317,82 @@ pub fn build(b: *std.Build) void {
     const debug_sfmono_s_step = b.step("debug-sfmono-s", "Debug SF Mono S character");
     debug_sfmono_s_step.dependOn(&run_debug_sfmono_s.step);
 
+    // Dollar sign debug tool
+    const debug_dollar_exe = b.addExecutable(.{
+        .name = "debug_dollar",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_dollar.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_dollar_exe);
+
+    const run_debug_dollar = b.addRunArtifact(debug_dollar_exe);
+    run_debug_dollar.step.dependOn(b.getInstallStep());
+    const debug_dollar_step = b.step("debug-dollar", "Debug $ character");
+    debug_dollar_step.dependOn(&run_debug_dollar.step);
+
+    // JetBrains Mono M debug tool
+    const debug_jetbrains_m_exe = b.addExecutable(.{
+        .name = "debug_jetbrains_m",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_jetbrains_m.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_jetbrains_m_exe);
+
+    const run_debug_jetbrains_m = b.addRunArtifact(debug_jetbrains_m_exe);
+    run_debug_jetbrains_m.step.dependOn(b.getInstallStep());
+    const debug_jetbrains_m_step = b.step("debug-jetbrains-m", "Debug JetBrains Mono M");
+    debug_jetbrains_m_step.dependOn(&run_debug_jetbrains_m.step);
+
+    // JetBrains Mono CFF debug tool
+    const debug_jetbrains_cff_exe = b.addExecutable(.{
+        .name = "debug_jetbrains_cff",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_jetbrains_cff.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_jetbrains_cff_exe);
+
+    const run_debug_jetbrains_cff = b.addRunArtifact(debug_jetbrains_cff_exe);
+    run_debug_jetbrains_cff.step.dependOn(b.getInstallStep());
+    const debug_jetbrains_cff_step = b.step("debug-jetbrains-cff", "Debug JetBrains Mono CFF");
+    debug_jetbrains_cff_step.dependOn(&run_debug_jetbrains_cff.step);
+
+    // Dollar artifacts debug tool
+    const debug_dollar_artifacts_exe = b.addExecutable(.{
+        .name = "debug_dollar_artifacts",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_dollar_artifacts.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_dollar_artifacts_exe);
+
+    const run_debug_dollar_artifacts = b.addRunArtifact(debug_dollar_artifacts_exe);
+    run_debug_dollar_artifacts.step.dependOn(b.getInstallStep());
+    const debug_dollar_artifacts_step = b.step("debug-dollar-artifacts", "Debug $ artifacts");
+    debug_dollar_artifacts_step.dependOn(&run_debug_dollar_artifacts.step);
+
     // Pixel distance debug tool
     const debug_pixel_dist_exe = b.addExecutable(.{
         .name = "debug_pixel_dist",
@@ -709,4 +785,137 @@ pub fn build(b: *std.Build) void {
     run_find_edges.step.dependOn(b.getInstallStep());
     const find_edges_step = b.step("find-edges", "Find edges at specific y coordinate");
     find_edges_step.dependOn(&run_find_edges.step);
+
+    // Debug A character difference analysis
+    const debug_a_diff_exe = b.addExecutable(.{
+        .name = "debug_a_diff",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_a_diff.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_a_diff_exe);
+
+    const run_debug_a_diff = b.addRunArtifact(debug_a_diff_exe);
+    run_debug_a_diff.step.dependOn(b.getInstallStep());
+    const debug_a_diff_step = b.step("debug-a-diff", "Debug Geneva A character differences with msdfgen");
+    debug_a_diff_step.dependOn(&run_debug_a_diff.step);
+
+    // Analyze A character artifacts
+    const analyze_a_exe = b.addExecutable(.{
+        .name = "analyze_a_artifacts",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/analyze_a_artifacts.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(analyze_a_exe);
+
+    const run_analyze_a = b.addRunArtifact(analyze_a_exe);
+    run_analyze_a.step.dependOn(b.getInstallStep());
+    const analyze_a_step = b.step("analyze-a", "Analyze Geneva A character for artifacts");
+    analyze_a_step.dependOn(&run_analyze_a.step);
+
+    // Render MSDF to show final output
+    const render_msdf_exe = b.addExecutable(.{
+        .name = "render_msdf",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/render_msdf.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(render_msdf_exe);
+
+    const run_render_msdf = b.addRunArtifact(render_msdf_exe);
+    run_render_msdf.step.dependOn(b.getInstallStep());
+    const render_msdf_step = b.step("render-msdf", "Render MSDF to show final output");
+    render_msdf_step.dependOn(&run_render_msdf.step);
+
+    // Debug SF Mono A
+    const debug_sfmono_a_exe = b.addExecutable(.{
+        .name = "debug_sfmono_a",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_sfmono_a.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_sfmono_a_exe);
+
+    const run_debug_sfmono_a = b.addRunArtifact(debug_sfmono_a_exe);
+    run_debug_sfmono_a.step.dependOn(b.getInstallStep());
+    const debug_sfmono_a_step = b.step("debug-sfmono-a", "Debug SF Mono A character artifact");
+    debug_sfmono_a_step.dependOn(&run_debug_sfmono_a.step);
+
+    // Compare SF Mono A with msdfgen
+    const compare_sfmono_a_exe = b.addExecutable(.{
+        .name = "compare_sfmono_a",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/compare_sfmono_a.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(compare_sfmono_a_exe);
+
+    const run_compare_sfmono_a = b.addRunArtifact(compare_sfmono_a_exe);
+    run_compare_sfmono_a.step.dependOn(b.getInstallStep());
+    const compare_sfmono_a_step = b.step("compare-sfmono-a", "Compare SF Mono A with msdfgen");
+    compare_sfmono_a_step.dependOn(&run_compare_sfmono_a.step);
+
+    // Debug pixel (21,39) for SF Mono A
+    const debug_pixel_21_39_exe = b.addExecutable(.{
+        .name = "debug_pixel_21_39",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_pixel_21_39.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_pixel_21_39_exe);
+
+    const run_debug_pixel_21_39 = b.addRunArtifact(debug_pixel_21_39_exe);
+    run_debug_pixel_21_39.step.dependOn(b.getInstallStep());
+    const debug_pixel_21_39_step = b.step("debug-pixel-21-39", "Debug pixel (21,39) for SF Mono A");
+    debug_pixel_21_39_step.dependOn(&run_debug_pixel_21_39.step);
+
+    // Check Geneva A contours
+    const check_geneva_a_exe = b.addExecutable(.{
+        .name = "check_geneva_a",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/check_geneva_a.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(check_geneva_a_exe);
+
+    const run_check_geneva_a = b.addRunArtifact(check_geneva_a_exe);
+    run_check_geneva_a.step.dependOn(b.getInstallStep());
+    const check_geneva_a_step = b.step("check-geneva-a", "Check Geneva A contour structure");
+    check_geneva_a_step.dependOn(&run_check_geneva_a.step);
 }
