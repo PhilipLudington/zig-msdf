@@ -880,3 +880,287 @@ The 14 remaining disagreements are at edge artifact locations near corners - exp
 - **Inside/outside agreement:** 100% for tested characters (except ~14 edge artifacts)
 - **Edge coloring:** Matches msdfgen's color distribution
 - **Cross product order:** Fixed to match msdfgen exactly
+
+---
+
+## 'g' Character Artifact Investigation (COMPLETED - FIX PENDING)
+
+**Problem:** The lowercase 'g' character in SF Mono shows an artifact (notch/hole) at the bottom of the descender loop, specifically at pixel (14, 46) when comparing zig-msdf vs msdfgen output.
+
+### Investigation Results
+
+**Match Rate:** 78.6% with 4 inside/outside disagreements
+
+**Artifact Location:** Pixel (14, 46) maps to shape coordinates (164.8, -16.8) after Y-flip accounting.
+
+**Key Finding:** At this corner location, two edges give opposite signs for the same point:
+- **Edge 1 (cyan):** Quadratic from (310, -330) to (178, -126), signed distance = **+110.04** (inside)
+- **Edge 2 (yellow):** Linear from (178, -126) to (309, -126), signed distance = **-110.04** (outside)
+
+These edges share a vertex at (178, -126). The point (164.8, -16.8) is in the region between the two edge tangent directions, resulting in opposite signs.
+
+### Root Cause: Pseudo-Distance Selection Algorithm
+
+**zig-msdf current approach:**
+1. Find minimum distance per channel by comparing `SignedDistance` (absolute value comparison)
+2. Convert the winning edge's distance to pseudo-distance AFTER selection
+3. Negate for MSDF convention
+
+**msdfgen's `PerpendicularDistanceSelector` approach:**
+1. Track three separate values:
+   - `minTrueDistance` - the closest edge by true signed distance
+   - `minNegativePerpendicularDistance` - closest negative perpendicular distance from ALL edges
+   - `minPositivePerpendicularDistance` - closest positive perpendicular distance from ALL edges
+2. Compute perpendicular distances DURING edge iteration (not just for the winner)
+3. Final distance selection based on inside/outside status:
+   ```cpp
+   double minDistance = minTrueDistance.distance < 0 ?
+       minNegativePerpendicularDistance :
+       minPositivePerpendicularDistance;
+   ```
+
+**Why this matters:** When edge 1 and edge 2 have the same absolute distance (110.04), our approach picks based on orthogonality. But msdfgen tracks ALL perpendicular distances and chooses based on the overall inside/outside status. After pseudo-distance conversion:
+- Edge 1: still +110.04 (param in [0,1], no change)
+- Edge 2: -109.2 (perpendicular distance, slightly smaller)
+
+msdfgen would choose edge 2 (smaller absolute perpendicular distance) for channels that need it, while we chose edge 1 before pseudo-distance conversion.
+
+### Files to Modify
+
+**Primary:** `src/generator/generate.zig`
+
+Changes needed:
+1. Create `PerpendicularDistanceSelector` struct with:
+   - `minTrueDistance: SignedDistance`
+   - `minNegativePerpendicularDistance: f64`
+   - `minPositivePerpendicularDistance: f64`
+   - `nearEdge: ?EdgeSegment`
+   - `nearEdgeParam: f64`
+
+2. Implement `addEdge()` method that:
+   - Computes true signed distance
+   - Updates `minTrueDistance` if closer
+   - Computes perpendicular distances at both endpoints
+   - Updates `minNegativePerpendicularDistance` and `minPositivePerpendicularDistance`
+
+3. Implement `computeDistance()` method that:
+   - Chooses between negative/positive perpendicular distance based on `minTrueDistance` sign
+   - Applies `distanceToPerpendicularDistance()` on the nearest edge
+   - Returns the final distance value
+
+4. Modify `computeChannelDistancesSingleContour()` to use the new selector
+
+**Reference implementation:** `~/Fun/msdfgen/core/edge-selectors.cpp` lines 40-130
+
+### Key msdfgen Code References
+
+**PerpendicularDistanceSelectorBase::addEdgePerpendicularDistance:**
+```cpp
+void PerpendicularDistanceSelectorBase::addEdgePerpendicularDistance(double distance) {
+    if (distance <= 0 && distance > minNegativePerpendicularDistance)
+        minNegativePerpendicularDistance = distance;
+    if (distance >= 0 && distance < minPositivePerpendicularDistance)
+        minPositivePerpendicularDistance = distance;
+}
+```
+
+**PerpendicularDistanceSelectorBase::computeDistance:**
+```cpp
+double PerpendicularDistanceSelectorBase::computeDistance(const Point2 &p) const {
+    double minDistance = minTrueDistance.distance < 0 ?
+        minNegativePerpendicularDistance :
+        minPositivePerpendicularDistance;
+    if (nearEdge) {
+        SignedDistance distance = minTrueDistance;
+        nearEdge->distanceToPerpendicularDistance(distance, p, nearEdgeParam);
+        if (fabs(distance.distance) < fabs(minDistance))
+            minDistance = distance.distance;
+    }
+    return minDistance;
+}
+```
+
+**PerpendicularDistanceSelector::addEdge (key perpendicular distance computation):**
+```cpp
+void PerpendicularDistanceSelector::addEdge(EdgeCache &cache, const EdgeSegment *prevEdge,
+                                             const EdgeSegment *edge, const EdgeSegment *nextEdge) {
+    // ... compute true distance ...
+
+    Vector2 ap = p-edge->point(0);
+    Vector2 bp = p-edge->point(1);
+    Vector2 aDir = edge->direction(0).normalize(true);
+    Vector2 bDir = edge->direction(1).normalize(true);
+    Vector2 prevDir = prevEdge->direction(1).normalize(true);
+    Vector2 nextDir = nextEdge->direction(0).normalize(true);
+
+    // Domain distance with blended neighbor directions
+    double add = dotProduct(ap, (prevDir+aDir).normalize(true));
+    double bdd = -dotProduct(bp, (bDir+nextDir).normalize(true));
+
+    if (add > 0) {
+        double pd = distance.distance;
+        if (getPerpendicularDistance(pd, ap, -aDir))
+            addEdgePerpendicularDistance(pd = -pd);
+        cache.aPerpendicularDistance = pd;
+    }
+    // ... similar for endpoint B ...
+}
+```
+
+### Debug Tools Available
+
+- `zig build debug-g` - Debug the 'g' character artifact
+- `zig build debug-g-hole` - Debug hole contour orientation
+- `zig build debug-g-geometry` - Debug glyph geometry and bounding boxes
+- `tests/debug_g_artifact.zig` - Comprehensive artifact analysis
+
+### Test Commands
+
+```bash
+# Generate 'g' with zig-msdf
+zig build single-glyph -- /System/Library/Fonts/SFNSMono.ttf g
+
+# Generate 'g' with msdfgen for comparison
+~/Fun/msdfgen/build/msdfgen msdf -font /System/Library/Fonts/SFNSMono.ttf 103 \
+    -dimensions 64 64 -pxrange 4 -autoframe -o /tmp/msdfgen_g.png
+convert /tmp/msdfgen_g.png /tmp/msdfgen_g.ppm
+
+# Run comparison (update tests/compare_msdf.zig to use msdfgen_g.ppm first)
+zig build compare-msdf
+
+# Run debug tool
+zig build debug-g
+```
+
+### Expected Outcome
+
+After implementing `PerpendicularDistanceSelector`:
+- 'g' artifact should be fixed
+- Other corner artifacts in S, M, D characters should also improve
+- Match rate should increase from ~80% to potentially 95%+
+
+---
+
+## PerpendicularDistanceSelector Implementation (COMPLETED)
+
+**File:** `src/generator/generate.zig`
+
+**Status:** IMPLEMENTED - All tests passing (94/94)
+
+### What Was Implemented
+
+A full `PerpendicularDistanceSelector` struct matching msdfgen's algorithm:
+
+```zig
+const PerpendicularDistanceSelector = struct {
+    minTrueDistance: SignedDistance,
+    minNegativePerpendicularDistance: f64,
+    minPositivePerpendicularDistance: f64,
+    nearEdge: ?EdgeSegment,
+    nearEdgeParam: f64,
+
+    pub fn addEdge(self, point, prevEdge, edge, nextEdge) void {
+        // 1. Compute true signed distance
+        // 2. Track minimum true distance
+        // 3. Compute domain distances using blended neighbor directions
+        // 4. If in domain, compute and track perpendicular distances
+    }
+
+    pub fn computeDistance(self, point) f64 {
+        // Choose negative/positive perpendicular distance based on inside/outside
+        // Compare with pseudo-distance from nearest edge
+        // Return the smaller magnitude
+    }
+};
+```
+
+Key features:
+- **Blended neighbor directions**: `add = dot(ap, (prevDir+aDir).normalize())`
+- **Separate positive/negative tracking**: Tracks perpendicular distances from ALL edges, not just nearest
+- **Domain-aware perpendicular distance**: Only tracks when point is in edge's domain (`add > 0` or `bdd > 0`)
+- **Final selection based on inside/outside**: `minTrueDistance.distance < 0 ? minNegativePerpendicularDistance : minPositivePerpendicularDistance`
+
+### Results
+
+| Test | Before | After |
+|------|--------|-------|
+| Geneva 'A' match rate | 99.7% | **99.8%** |
+| Inside/outside agreement | 100% | **100%** |
+| All tests | 94/94 passing | **94/94 passing** |
+| SF Mono 'g' match rate | 78.6% | **99.9%** |
+
+### Findings About 'g' Character Artifact
+
+The pixel (14, 46) artifact persists with **both** the simple algorithm and the PerpendicularDistanceSelector. Testing confirmed:
+
+1. **Simple algorithm (pseudo-distance only):** 99.9% match, 4 disagreements including (14, 46)
+2. **PerpendicularDistanceSelector:** 99.9% match, 4 disagreements including (14, 46)
+
+**Conclusion:** The artifact at pixel (14, 46) is NOT caused by the perpendicular distance selection algorithm. It exists in both implementations, suggesting the root cause is elsewhere (possibly in signed distance calculation for specific edge geometries or edge coloring at that corner).
+
+### Remaining Disagreements
+
+For SF Mono 'g' character (99.9% match rate):
+- `(26, 2)`: zig=127, msdf=128 - borderline (off by 1)
+- `(22, 37)`: zig=128, msdf=127 - borderline (off by 1)
+- `(14, 46)`: zig=255, msdf=0 - significant artifact (under investigation)
+- `(29, 46)`: zig=127, msdf=128 - borderline (off by 1)
+
+Three of these are borderline pixels with off-by-1 differences. The (14, 46) artifact remains for future investigation.
+
+### Detailed Investigation of (14, 46) Artifact
+
+**Shape coordinates:** Pixel (14, 46) maps to shape point (164.8, -16.8) after Y-flip accounting.
+
+**Key findings:**
+
+1. **Winding number:** Point (164.8, -16.8) is OUTSIDE the glyph (winding=0)
+   - 2 upward crossings + 2 downward crossings = net 0
+
+2. **Edge distances at this point:**
+   - Edge 1 (cyan quadratic, (309.5,-329.5) to (178,-126)): dist=+109.99, param=0.9222, ortho=0
+   - Edge 2 (yellow linear, (178,-126) to (309,-126)): dist=-109.99, param=-0.1008, ortho=0.12
+
+3. **The conflict:** Two edges meeting at corner (178, -126) give OPPOSITE signs:
+   - Quadratic says: positive distance → outside (but local to this edge, actually means inside for CCW)
+   - Linear says: negative distance → inside (but local to this edge, actually means outside for CCW)
+
+4. **Why quadratic wins:** Lower orthogonality (0 vs 0.12) due to interior closest point.
+
+5. **Result:**
+   - minTrueDistance = +109.99 (from quadratic, ortho=0)
+   - Since positive, we use minPositivePerpendicularDistance (1052.7)
+   - Pseudo-distance from nearEdge is smaller (109.99)
+   - Final G channel: 109.99 → after negation → -109.99 → pixel 255 (inside)
+   - msdfgen gives G=0 (outside)
+
+**Root cause:** At corner vertices where two edges share a point, the edges can give opposite signed distances based on their local tangent directions. The "correct" answer depends on the global winding number, not the local edge geometry. The PerpendicularDistanceSelector picks the edge with lower orthogonality (the quadratic with interior closest point), but this can give the wrong inside/outside answer.
+
+**Impact:** Only 4 pixels affected for 'g' character (99.9% match rate). All 94 tests pass.
+
+### Fix Applied: Corner Handling in PerpendicularDistanceSelector
+
+**Files:** `src/generator/generate.zig`
+
+**Problem:** At corners, the minTrueDistance sign can be wrong because the closest edge's local geometry disagrees with the global winding. The standard msdfgen approach selects the perpendicular distance bucket based on minTrueDistance sign, which inherits this error.
+
+**Solution (two parts):**
+
+1. **Closer bucket selection** (in `computeDistance`):
+   - When both perpendicular distance buckets have tracked values, pick the one closer to 0
+   - This prefers the perpendicular distance from an edge that actually "sees" the point (tracked a finite perpendicular distance) over a distant bucket value
+
+2. **Winding-based fallback** (in `computeChannelDistancesSingleContour`):
+   - When NO perpendicular distance was tracked for a channel (both buckets are infinity), use the winding number to determine the correct sign
+   - This handles edges like quadratic curves where the perpendicular tracking conditions (ts > 0) aren't met
+
+**Result:** Pixel (14, 46) now produces R=0, G=0, B=0, matching msdfgen output exactly.
+
+---
+
+## Current Status
+
+- **Match rate with msdfgen_autoframe (for 'A'):** 11.5% (baseline, unchanged by corner fix)
+- **SF Mono 'g' artifact (14,46):** FIXED - now matches msdfgen (R=0, G=0, B=0)
+- **PerpendicularDistanceSelector:** Implemented with corner handling fixes
+- **Known issues:** Match rate for 'A' character remains at 11.5% - requires further investigation

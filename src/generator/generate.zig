@@ -16,6 +16,182 @@ const EdgeColor = edge_mod.EdgeColor;
 const Contour = contour_mod.Contour;
 const Shape = contour_mod.Shape;
 
+/// Perpendicular distance selector matching msdfgen's algorithm.
+/// Tracks separate positive and negative perpendicular distances from ALL edges,
+/// not just the nearest. This is critical for correct corner handling.
+const PerpendicularDistanceSelector = struct {
+    /// The minimum true signed distance found.
+    minTrueDistance: SignedDistance,
+    /// Minimum negative perpendicular distance (for inside points).
+    minNegativePerpendicularDistance: f64,
+    /// Minimum positive perpendicular distance (for outside points).
+    minPositivePerpendicularDistance: f64,
+    /// The edge that gave the minimum true distance.
+    nearEdge: ?EdgeSegment,
+    /// The parameter on nearEdge where the minimum occurred.
+    nearEdgeParam: f64,
+
+    /// Initialize a new selector.
+    pub fn init() PerpendicularDistanceSelector {
+        return .{
+            .minTrueDistance = SignedDistance.infinite,
+            .minNegativePerpendicularDistance = -std.math.inf(f64),
+            .minPositivePerpendicularDistance = std.math.inf(f64),
+            .nearEdge = null,
+            .nearEdgeParam = 0,
+        };
+    }
+
+    /// Check if perpendicular distance is valid and update output.
+    /// Returns true if perpendicular distance was used.
+    /// msdfgen: getPerpendicularDistance(distance, ep, edgeDir)
+    fn getPerpendicularDistance(distance: *f64, ep: Vec2, edgeDir: Vec2) bool {
+        const ts = ep.dot(edgeDir);
+        if (ts > 0) {
+            const perpendicularDistance = ep.cross(edgeDir);
+            if (@abs(perpendicularDistance) < @abs(distance.*)) {
+                distance.* = perpendicularDistance;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Add a perpendicular distance to the tracking.
+    /// msdfgen: addEdgePerpendicularDistance(distance)
+    fn addEdgePerpendicularDistance(self: *PerpendicularDistanceSelector, distance: f64) void {
+        if (distance <= 0 and distance > self.minNegativePerpendicularDistance) {
+            self.minNegativePerpendicularDistance = distance;
+        }
+        if (distance >= 0 and distance < self.minPositivePerpendicularDistance) {
+            self.minPositivePerpendicularDistance = distance;
+        }
+    }
+
+    /// Add a true distance from an edge.
+    /// msdfgen: addEdgeTrueDistance(edge, distance, param)
+    fn addEdgeTrueDistance(self: *PerpendicularDistanceSelector, edge: EdgeSegment, distance: SignedDistance, param: f64) void {
+        if (distance.lessThan(self.minTrueDistance)) {
+            self.minTrueDistance = distance;
+            self.nearEdge = edge;
+            self.nearEdgeParam = param;
+        }
+    }
+
+    /// Process an edge with its neighbors, computing true and perpendicular distances.
+    /// This is the key method that matches msdfgen's MultiDistanceSelector::addEdge.
+    pub fn addEdge(
+        self: *PerpendicularDistanceSelector,
+        point: Vec2,
+        prevEdge: EdgeSegment,
+        edge: EdgeSegment,
+        nextEdge: EdgeSegment,
+    ) void {
+        // Get true signed distance
+        const result = edge.signedDistanceWithParam(point);
+        const distance = result.distance;
+        const param = result.param;
+
+        // Update true distance
+        self.addEdgeTrueDistance(edge, distance, param);
+
+        // Compute vectors for perpendicular distance
+        const ap = point.sub(edge.startPoint());
+        const bp = point.sub(edge.endPoint());
+
+        // Edge directions at endpoints
+        const aDir = edge.direction(0).normalize();
+        const bDir = edge.direction(1).normalize();
+
+        // Neighbor directions for blending
+        const prevDir = prevEdge.direction(1).normalize();
+        const nextDir = nextEdge.direction(0).normalize();
+
+        // Domain distance at start: dot(ap, (prevDir+aDir).normalize())
+        // msdfgen uses normalize(true) which returns zero vector if input is zero
+        const blendedA = prevDir.add(aDir);
+        const blendedALen = blendedA.length();
+        const blendedANorm = if (blendedALen > 1e-14) blendedA.scale(1.0 / blendedALen) else Vec2.zero;
+        const add = ap.dot(blendedANorm);
+
+        // Domain distance at end: -dot(bp, (bDir+nextDir).normalize())
+        const blendedB = bDir.add(nextDir);
+        const blendedBLen = blendedB.length();
+        const blendedBNorm = if (blendedBLen > 1e-14) blendedB.scale(1.0 / blendedBLen) else Vec2.zero;
+        const bdd = -bp.dot(blendedBNorm);
+
+        // If point is in domain of endpoint A
+        if (add > 0) {
+            var pd = distance.distance;
+            // Check perpendicular distance using -aDir (looking backward)
+            if (getPerpendicularDistance(&pd, ap, aDir.scale(-1))) {
+                // Negate for endpoint A (msdfgen: pd = -pd)
+                self.addEdgePerpendicularDistance(-pd);
+            }
+        }
+
+        // If point is in domain of endpoint B
+        if (bdd > 0) {
+            var pd = distance.distance;
+            // Check perpendicular distance using bDir (looking forward)
+            if (getPerpendicularDistance(&pd, bp, bDir)) {
+                // Don't negate for endpoint B
+                self.addEdgePerpendicularDistance(pd);
+            }
+        }
+    }
+
+    /// Compute the final distance value.
+    /// msdfgen: computeDistance(p)
+    pub fn computeDistance(self: PerpendicularDistanceSelector, point: Vec2) f64 {
+        // Choose positive or negative perpendicular distance based on inside/outside
+        var minDistance: f64 = if (self.minTrueDistance.distance < 0)
+            self.minNegativePerpendicularDistance
+        else
+            self.minPositivePerpendicularDistance;
+
+        // CORNER FIX: At corners, edges can give conflicting inside/outside results.
+        // If we have a perpendicular distance from the OTHER bucket that's closer to 0,
+        // use that instead. This handles corners where minTrueDistance sign is wrong.
+        const has_neg_perp = std.math.isFinite(self.minNegativePerpendicularDistance);
+        const has_pos_perp = std.math.isFinite(self.minPositivePerpendicularDistance);
+
+        if (has_neg_perp and has_pos_perp) {
+            // Both buckets have values - pick the one closer to 0
+            if (@abs(self.minNegativePerpendicularDistance) < @abs(self.minPositivePerpendicularDistance)) {
+                if (@abs(self.minNegativePerpendicularDistance) < @abs(minDistance)) {
+                    minDistance = self.minNegativePerpendicularDistance;
+                }
+            } else {
+                if (@abs(self.minPositivePerpendicularDistance) < @abs(minDistance)) {
+                    minDistance = self.minPositivePerpendicularDistance;
+                }
+            }
+        } else if (has_neg_perp and !has_pos_perp) {
+            // Only negative bucket has a value
+            if (@abs(self.minNegativePerpendicularDistance) < @abs(minDistance)) {
+                minDistance = self.minNegativePerpendicularDistance;
+            }
+        } else if (has_pos_perp and !has_neg_perp) {
+            // Only positive bucket has a value
+            if (@abs(self.minPositivePerpendicularDistance) < @abs(minDistance)) {
+                minDistance = self.minPositivePerpendicularDistance;
+            }
+        }
+
+        // Check if the nearest edge's pseudo-distance is closer
+        if (self.nearEdge) |edge| {
+            var distance = self.minTrueDistance;
+            edge_mod.distanceToPseudoDistance(edge, point, &distance, self.nearEdgeParam);
+            if (@abs(distance.distance) < @abs(minDistance)) {
+                minDistance = distance.distance;
+            }
+        }
+
+        return minDistance;
+    }
+};
+
 /// Result of MSDF generation containing the pixel buffer and dimensions.
 pub const MsdfBitmap = struct {
     /// Pixel data in RGB8 format (3 bytes per pixel: R, G, B).
@@ -372,7 +548,7 @@ fn combineContourDistances(contour_results: []const ContourChannelDistances, tot
 /// For single-contour shapes, uses the simple global minimum approach.
 /// For multi-contour shapes (like @, $, 8), uses the overlapping contour
 /// combiner algorithm to resolve cross-contour interference.
-fn computeChannelDistances(shape: Shape, point: Vec2) [3]f64 {
+pub fn computeChannelDistances(shape: Shape, point: Vec2) [3]f64 {
     // Use the simple approach for all shapes: find minimum distance for each
     // channel across ALL edges in ALL contours, preserving signed distances
     // directly from edge geometry.
@@ -383,73 +559,83 @@ fn computeChannelDistances(shape: Shape, point: Vec2) [3]f64 {
 }
 
 /// Single-contour implementation of channel distance computation.
-/// This is the original algorithm, used as a fast path for single-contour shapes
-/// and as a fallback for shapes with too many contours.
+/// Uses PerpendicularDistanceSelector matching msdfgen's algorithm for accurate
+/// corner handling. This tracks perpendicular distances from ALL edges, not just
+/// the nearest, which is critical for correct inside/outside determination at corners.
 fn computeChannelDistancesSingleContour(shape: Shape, point: Vec2) [3]f64 {
-    var min_red = SignedDistance.infinite;
-    var min_green = SignedDistance.infinite;
-    var min_blue = SignedDistance.infinite;
+    // Per-channel selectors matching msdfgen's MultiDistanceSelector
+    var red_selector = PerpendicularDistanceSelector.init();
+    var green_selector = PerpendicularDistanceSelector.init();
+    var blue_selector = PerpendicularDistanceSelector.init();
 
-    // Track the edge and parameter for each minimum (needed for pseudo-distance)
-    var red_edge: ?EdgeSegment = null;
-    var green_edge: ?EdgeSegment = null;
-    var blue_edge: ?EdgeSegment = null;
-    var red_param: f64 = 0;
-    var green_param: f64 = 0;
-    var blue_param: f64 = 0;
-
-    // Find minimum distance per channel across all edges
+    // Process all edges with their neighbors
     for (shape.contours) |contour| {
-        for (contour.edges) |e| {
-            const result = e.signedDistanceWithParam(point);
-            const sd = result.distance;
-            const param = result.param;
-            const color = e.getColor();
+        const edge_count = contour.edges.len;
+        if (edge_count == 0) continue;
 
-            // Update minimum for each channel this edge contributes to
+        for (0..edge_count) |i| {
+            const edge = contour.edges[i];
+            const color = edge.getColor();
+
+            // Get neighbor edges (wrapping at contour boundaries)
+            const prev_idx = if (i == 0) edge_count - 1 else i - 1;
+            const next_idx = if (i == edge_count - 1) 0 else i + 1;
+            const prev_edge = contour.edges[prev_idx];
+            const next_edge = contour.edges[next_idx];
+
+            // Add edge to relevant channel selectors
             if (color.hasRed()) {
-                if (sd.lessThan(min_red)) {
-                    min_red = sd;
-                    red_edge = e;
-                    red_param = param;
-                }
+                red_selector.addEdge(point, prev_edge, edge, next_edge);
             }
             if (color.hasGreen()) {
-                if (sd.lessThan(min_green)) {
-                    min_green = sd;
-                    green_edge = e;
-                    green_param = param;
-                }
+                green_selector.addEdge(point, prev_edge, edge, next_edge);
             }
             if (color.hasBlue()) {
-                if (sd.lessThan(min_blue)) {
-                    min_blue = sd;
-                    blue_edge = e;
-                    blue_param = param;
-                }
+                blue_selector.addEdge(point, prev_edge, edge, next_edge);
             }
         }
     }
 
-    // Convert to pseudo-distance for each channel
-    // This extends edge tangent lines beyond endpoints for smoother corners
-    if (red_edge) |e| {
-        edge_mod.distanceToPseudoDistance(e, point, &min_red, red_param);
-    }
-    if (green_edge) |e| {
-        edge_mod.distanceToPseudoDistance(e, point, &min_green, green_param);
-    }
-    if (blue_edge) |e| {
-        edge_mod.distanceToPseudoDistance(e, point, &min_blue, blue_param);
+    // Compute final distances using perpendicular distance selection
+    var r_dist = red_selector.computeDistance(point);
+    var g_dist = green_selector.computeDistance(point);
+    var b_dist = blue_selector.computeDistance(point);
+
+    // WINDING FIX: Only apply when NO perpendicular distance was tracked for a channel.
+    // This handles corners where edge geometry gives wrong inside/outside and no
+    // perpendicular distance was available to correct it.
+    const r_has_perp = std.math.isFinite(red_selector.minNegativePerpendicularDistance) or
+        std.math.isFinite(red_selector.minPositivePerpendicularDistance);
+    const g_has_perp = std.math.isFinite(green_selector.minNegativePerpendicularDistance) or
+        std.math.isFinite(green_selector.minPositivePerpendicularDistance);
+    const b_has_perp = std.math.isFinite(blue_selector.minNegativePerpendicularDistance) or
+        std.math.isFinite(blue_selector.minPositivePerpendicularDistance);
+
+    // Only apply winding fix for channels without perpendicular distance
+    if (!r_has_perp or !g_has_perp or !b_has_perp) {
+        const winding = computeWinding(shape, point);
+        const is_inside = winding != 0;
+
+        // In edge convention: positive = inside, negative = outside
+        // Only fix channels that have no perpendicular distance tracked
+        if (!r_has_perp) {
+            if (!is_inside and r_dist > 0) r_dist = -@abs(r_dist);
+            if (is_inside and r_dist < 0) r_dist = @abs(r_dist);
+        }
+        if (!g_has_perp) {
+            if (!is_inside and g_dist > 0) g_dist = -@abs(g_dist);
+            if (is_inside and g_dist < 0) g_dist = @abs(g_dist);
+        }
+        if (!b_has_perp) {
+            if (!is_inside and b_dist > 0) b_dist = -@abs(b_dist);
+            if (is_inside and b_dist < 0) b_dist = @abs(b_dist);
+        }
     }
 
     // Negate distances: MSDF convention is negative=inside, positive=outside.
     // After orientContours() normalizes to CCW, signedDistance gives positive
     // for inside points. Negate to match MSDF convention.
-    const r = -min_red.distance;
-    const g = -min_green.distance;
-    const b = -min_blue.distance;
-    return .{ r, g, b };
+    return .{ -r_dist, -g_dist, -b_dist };
 }
 
 /// Stencil flags for error correction.

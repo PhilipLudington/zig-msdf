@@ -412,6 +412,139 @@ pub fn build(b: *std.Build) void {
     const debug_channel_step = b.step("debug-channel", "Debug channel edge selection");
     debug_channel_step.dependOn(&run_debug_channel.step);
 
+    // G artifact debug tool
+    const debug_g_exe = b.addExecutable(.{
+        .name = "debug_g_artifact",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_g_artifact.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_g_exe);
+
+    const run_debug_g = b.addRunArtifact(debug_g_exe);
+    run_debug_g.step.dependOn(b.getInstallStep());
+    const debug_g_step = b.step("debug-g", "Debug g character artifact");
+    debug_g_step.dependOn(&run_debug_g.step);
+
+    // Debug g hole contour orientation
+    const debug_g_hole_exe = b.addExecutable(.{
+        .name = "debug_g_hole",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_g_hole.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_g_hole_exe);
+
+    const run_debug_g_hole = b.addRunArtifact(debug_g_hole_exe);
+    run_debug_g_hole.step.dependOn(b.getInstallStep());
+    const debug_g_hole_step = b.step("debug-g-hole", "Debug g hole contour orientation");
+    debug_g_hole_step.dependOn(&run_debug_g_hole.step);
+
+    // Debug g geometry
+    const debug_g_geometry_exe = b.addExecutable(.{
+        .name = "debug_g_geometry",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_g_geometry.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_g_geometry_exe);
+
+    const run_debug_g_geometry = b.addRunArtifact(debug_g_geometry_exe);
+    run_debug_g_geometry.step.dependOn(b.getInstallStep());
+    const debug_g_geometry_step = b.step("debug-g-geometry", "Debug g glyph geometry");
+    debug_g_geometry_step.dependOn(&run_debug_g_geometry.step);
+
+    // Debug sign convention
+    const debug_sign_conv_exe = b.addExecutable(.{
+        .name = "debug_sign_convention",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_sign_convention.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_sign_conv_exe);
+
+    const run_debug_sign_conv = b.addRunArtifact(debug_sign_conv_exe);
+    run_debug_sign_conv.step.dependOn(b.getInstallStep());
+    const debug_sign_conv_step = b.step("debug-sign", "Debug sign convention at g artifact");
+    debug_sign_conv_step.dependOn(&run_debug_sign_conv.step);
+
+    // Debug perpendicular distance selector
+    const debug_perp_dist_exe = b.addExecutable(.{
+        .name = "debug_perp_dist",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_perp_dist.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_perp_dist_exe);
+
+    const run_debug_perp_dist = b.addRunArtifact(debug_perp_dist_exe);
+    run_debug_perp_dist.step.dependOn(b.getInstallStep());
+    const debug_perp_dist_step = b.step("debug-perp-dist", "Debug perpendicular distance selector");
+    debug_perp_dist_step.dependOn(&run_debug_perp_dist.step);
+
+    // Debug perpendicular selector trace for 'g' artifact
+    const debug_perp_selector_exe = b.addExecutable(.{
+        .name = "debug_perp_selector",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_perp_selector.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_perp_selector_exe);
+
+    const run_debug_perp_selector = b.addRunArtifact(debug_perp_selector_exe);
+    run_debug_perp_selector.step.dependOn(b.getInstallStep());
+    const debug_perp_selector_step = b.step("debug-perp-selector", "Debug perpendicular selector trace for g artifact");
+    debug_perp_selector_step.dependOn(&run_debug_perp_selector.step);
+
+    // Debug winding at point
+    const debug_winding_exe = b.addExecutable(.{
+        .name = "debug_winding",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_winding_at_point.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(debug_winding_exe);
+
+    const run_debug_winding = b.addRunArtifact(debug_winding_exe);
+    run_debug_winding.step.dependOn(b.getInstallStep());
+    const debug_winding_step = b.step("debug-winding", "Debug winding number at point");
+    debug_winding_step.dependOn(&run_debug_winding.step);
+
     // CFF orientation debug tool
     const cff_orient_debug_exe = b.addExecutable(.{
         .name = "cff_orient_debug",
@@ -557,4 +690,23 @@ pub fn build(b: *std.Build) void {
 
     const debug_s_coloring_step = b.step("debug-s-coloring", "Debug S character edge coloring");
     debug_s_coloring_step.dependOn(&run_debug_s_coloring.step);
+
+    // Debug find edges at y
+    const find_edges_exe = b.addExecutable(.{
+        .name = "find_edges_at_y",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/find_edges_at_y.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "msdf", .module = msdf_module },
+            },
+        }),
+    });
+    b.installArtifact(find_edges_exe);
+
+    const run_find_edges = b.addRunArtifact(find_edges_exe);
+    run_find_edges.step.dependOn(b.getInstallStep());
+    const find_edges_step = b.step("find-edges", "Find edges at specific y coordinate");
+    find_edges_step.dependOn(&run_find_edges.step);
 }
