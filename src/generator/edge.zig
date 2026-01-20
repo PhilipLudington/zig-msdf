@@ -1136,13 +1136,17 @@ test "QuadraticSegment.signedDistance - point on curve" {
 
 test "QuadraticSegment.signedDistance - point above curve" {
     // Curve goes from (0,0) to (10,0) with control point at (5,10)
-    // Peak is around (5,5). Sign convention matches msdfgen reference.
+    // Peak is around (5,5) at t=0.5.
     const seg = QuadraticSegment.init(Vec2.init(0, 0), Vec2.init(5, 10), Vec2.init(10, 0));
 
-    // Point above the curve peak - positive distance in msdfgen convention
+    // Point above the curve peak
     const d = seg.signedDistance(Vec2.init(5, 8));
-    try std.testing.expect(d.distance > 0);
-    // Distance should be approximately 3 (from (5,5) to (5,8))
+    // The sign depends on the cross product convention with the curve direction.
+    // At t=0.5, the tangent is (10, 0), and the point (5, 8) is above the curve (5, 5).
+    // The sign follows from cross(dir, qa) which is negative for points above a
+    // left-to-right curve (convention: inside is right of travel direction).
+    try std.testing.expect(d.distance < 0);
+    // Distance magnitude should be approximately 3 (from (5,5) to (5,8))
     try std.testing.expectApproxEqAbs(@as(f64, 3), @abs(d.distance), 0.1);
 }
 

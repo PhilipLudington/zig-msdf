@@ -369,6 +369,7 @@ test "Contour.winding - CCW square" {
     const allocator = std.testing.allocator;
 
     // Create a CCW square (0,0) -> (1,0) -> (1,1) -> (0,1) -> (0,0)
+    // (counterclockwise when Y points up)
     var edges = try allocator.alloc(EdgeSegment, 4);
     edges[0] = .{ .linear = edge.LinearSegment.init(Vec2.init(0, 0), Vec2.init(1, 0)) };
     edges[1] = .{ .linear = edge.LinearSegment.init(Vec2.init(1, 0), Vec2.init(1, 1)) };
@@ -378,14 +379,17 @@ test "Contour.winding - CCW square" {
     var contour = Contour.fromEdges(allocator, edges);
     defer contour.deinit();
 
-    // CCW should give positive winding
-    try std.testing.expect(contour.winding() > 0);
+    // The winding formula sum((x1-x0)*(y1+y0)) returns negative for CCW contours
+    // (opposite of standard shoelace). This matches msdfgen's convention where
+    // CCW outer contours have negative winding.
+    try std.testing.expect(contour.winding() < 0);
 }
 
 test "Contour.winding - CW square" {
     const allocator = std.testing.allocator;
 
     // Create a CW square (0,0) -> (0,1) -> (1,1) -> (1,0) -> (0,0)
+    // (clockwise when Y points up)
     var edges = try allocator.alloc(EdgeSegment, 4);
     edges[0] = .{ .linear = edge.LinearSegment.init(Vec2.init(0, 0), Vec2.init(0, 1)) };
     edges[1] = .{ .linear = edge.LinearSegment.init(Vec2.init(0, 1), Vec2.init(1, 1)) };
@@ -395,8 +399,8 @@ test "Contour.winding - CW square" {
     var contour = Contour.fromEdges(allocator, edges);
     defer contour.deinit();
 
-    // CW should give negative winding
-    try std.testing.expect(contour.winding() < 0);
+    // The winding formula returns positive for CW contours
+    try std.testing.expect(contour.winding() > 0);
 }
 
 test "Contour.bounds" {

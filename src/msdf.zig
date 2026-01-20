@@ -49,7 +49,11 @@ pub const GenerateOptions = struct {
     range: f64 = 4.0,
     /// Apply error correction to fix artifacts on curves and multi-contour glyphs.
     /// Disabled by default to preserve MSDF color diversity for sharp edges.
+    /// When true, uses error_correction_config for detailed control.
     error_correction: bool = false,
+    /// Detailed error correction configuration.
+    /// Only used when error_correction is true.
+    error_correction_config: generate.ErrorCorrectionConfig = .{},
     /// Use msdfgen's autoframe algorithm for transform calculation.
     /// When true, produces output more similar to msdfgen with -autoframe flag.
     /// The glyph may extend slightly beyond bitmap boundaries (handled correctly by MSDF).
@@ -336,7 +340,13 @@ pub fn generateGlyph(
     // Apply error correction if enabled
     if (options.error_correction) {
         var bitmap_mut = bitmap;
-        generate.correctErrorsWithProtection(&bitmap_mut, shape, transform);
+        generate.correctErrorsConfigured(
+            &bitmap_mut,
+            shape,
+            transform,
+            range_in_font_units,
+            options.error_correction_config,
+        );
     }
 
     // Calculate metrics (normalized to font units, caller can scale as needed)

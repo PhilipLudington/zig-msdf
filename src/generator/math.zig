@@ -408,6 +408,12 @@ pub fn nonZeroSign(x: f64) f64 {
     return if (x >= 0) 1.0 else -1.0;
 }
 
+/// Compute the median of three f64 values.
+/// Returns the middle value when sorted.
+pub fn median3f64(a: f64, b: f64, c: f64) f64 {
+    return @max(@min(a, b), @min(@max(a, b), c));
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -583,4 +589,24 @@ test "solveCubic - quadratic degenerate" {
     try std.testing.expectEqual(@as(u8, 2), result.count);
     try std.testing.expectApproxEqAbs(@as(f64, 2), result.roots[0], 1e-10);
     try std.testing.expectApproxEqAbs(@as(f64, 3), result.roots[1], 1e-10);
+}
+
+test "median3f64 - computes median correctly" {
+    // Test various orderings
+    try std.testing.expectEqual(@as(f64, 5.0), median3f64(1.0, 5.0, 9.0));
+    try std.testing.expectEqual(@as(f64, 5.0), median3f64(5.0, 1.0, 9.0));
+    try std.testing.expectEqual(@as(f64, 5.0), median3f64(9.0, 5.0, 1.0));
+    try std.testing.expectEqual(@as(f64, 5.0), median3f64(1.0, 9.0, 5.0));
+    try std.testing.expectEqual(@as(f64, 5.0), median3f64(5.0, 9.0, 1.0));
+    try std.testing.expectEqual(@as(f64, 5.0), median3f64(9.0, 1.0, 5.0));
+
+    // Edge cases
+    try std.testing.expectEqual(@as(f64, 5.0), median3f64(5.0, 5.0, 5.0));
+    try std.testing.expectEqual(@as(f64, 5.0), median3f64(5.0, 5.0, 9.0));
+    try std.testing.expectEqual(@as(f64, 0.0), median3f64(0.0, 0.0, 0.0));
+    try std.testing.expectApproxEqAbs(@as(f64, 0.5), median3f64(0.0, 0.5, 1.0), 1e-10);
+
+    // Negative values
+    try std.testing.expectEqual(@as(f64, 0.0), median3f64(-1.0, 0.0, 1.0));
+    try std.testing.expectEqual(@as(f64, -2.0), median3f64(-3.0, -2.0, -1.0));
 }
