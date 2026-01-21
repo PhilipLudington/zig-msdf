@@ -7,6 +7,7 @@ const std = @import("std");
 const math = @import("math.zig");
 const edge_mod = @import("edge.zig");
 const contour_mod = @import("contour.zig");
+const coloring_mod = @import("coloring.zig");
 
 const Vec2 = math.Vec2;
 const Bounds = math.Bounds;
@@ -601,25 +602,54 @@ fn computeChannelDistancesSingleContour(shape: Shape, point: Vec2) [3]f64 {
     var g_dist = green_selector.computeDistance(point);
     var b_dist = blue_selector.computeDistance(point);
 
-    // WINDING FIX: Edge geometry can give wrong inside/outside for points far from
-    // the glyph, or for multi-contour shapes where the closest edge is from a different
-    // contour. Always use winding number to ensure correct sign.
+    // MEDIAN-BASED WINDING FIX: Only apply correction when the median disagrees
+    // with winding. This preserves corner sharpness (where median is correct)
+    // while fixing holes and blobs (where median is wrong).
     //
-    // The winding number is the ground truth for inside/outside determination.
-    // Positive distance means inside in edge convention, negative means outside.
-    // If the winding says otherwise, flip the sign.
+    // At corners: channels disagree but median picks the correct edge → no fix needed
+    // At holes/blobs: channels disagree and median picks wrong → fix needed
     const winding = computeWinding(shape, point);
     const is_inside = winding != 0;
 
-    // Fix sign based on winding for ALL channels
-    if (!is_inside and r_dist > 0) r_dist = -@abs(r_dist);
-    if (is_inside and r_dist < 0) r_dist = @abs(r_dist);
+    // SELECTIVE WINDING CORRECTION:
+    // Fix artifacts while preserving valid corner disagreements.
+    const r_positive = r_dist > 0;
+    const g_positive = g_dist > 0;
+    const b_positive = b_dist > 0;
+    const positive_count: u8 = @as(u8, @intFromBool(r_positive)) + @as(u8, @intFromBool(g_positive)) + @as(u8, @intFromBool(b_positive));
+    const all_same_sign = (positive_count == 0) or (positive_count == 3);
 
-    if (!is_inside and g_dist > 0) g_dist = -@abs(g_dist);
-    if (is_inside and g_dist < 0) g_dist = @abs(g_dist);
+    if (all_same_sign) {
+        // All channels agree - check if they contradict winding
+        const all_positive = positive_count == 3;
+        if (!is_inside and all_positive) {
+            // Outside but all positive - artifact, flip all to negative
+            r_dist = -@abs(r_dist);
+            g_dist = -@abs(g_dist);
+            b_dist = -@abs(b_dist);
+        } else if (is_inside and !all_positive) {
+            // Inside but all negative - artifact, flip all to positive
+            r_dist = @abs(r_dist);
+            g_dist = @abs(g_dist);
+            b_dist = @abs(b_dist);
+        }
+    } else {
+        // Channels disagree - check if majority contradicts winding
+        const majority_positive = positive_count >= 2;
 
-    if (!is_inside and b_dist > 0) b_dist = -@abs(b_dist);
-    if (is_inside and b_dist < 0) b_dist = @abs(b_dist);
+        if (!is_inside and majority_positive) {
+            // Outside but majority positive - artifact, flip all to negative
+            if (r_dist > 0) r_dist = -@abs(r_dist);
+            if (g_dist > 0) g_dist = -@abs(g_dist);
+            if (b_dist > 0) b_dist = -@abs(b_dist);
+        } else if (is_inside and !majority_positive) {
+            // Inside but majority negative - artifact, flip all to positive
+            if (r_dist < 0) r_dist = @abs(r_dist);
+            if (g_dist < 0) g_dist = @abs(g_dist);
+            if (b_dist < 0) b_dist = @abs(b_dist);
+        }
+        // If majority agrees with winding, preserve disagreement (valid corner)
+    }
 
     // Negate distances: MSDF convention is negative=inside, positive=outside.
     // After orientContours() normalizes to CCW, signedDistance gives positive
@@ -1916,6 +1946,10 @@ test "generateMsdf - simple square" {
 
     var shape = Shape.fromContours(allocator, contours);
     defer shape.deinit();
+
+    // Apply coloring and orientation like the real pipeline does
+    coloring_mod.colorEdgesSimple(&shape);
+    shape.orientContours();
 
     // Calculate transform to fit shape
     const bounds = shape.bounds();
