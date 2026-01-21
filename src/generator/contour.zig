@@ -7,9 +7,18 @@ const std = @import("std");
 const math = @import("math.zig");
 const edge = @import("edge.zig");
 
+const Allocator = std.mem.Allocator;
 const Vec2 = math.Vec2;
 const Bounds = math.Bounds;
 const EdgeSegment = edge.EdgeSegment;
+
+/// Information about overlapping contours with the same winding.
+pub const OverlapInfo = struct {
+    /// Index of the outer (containing) contour.
+    outer_idx: usize,
+    /// Index of the inner (contained) contour.
+    inner_idx: usize,
+};
 
 /// Intersection data for scanline algorithm.
 const Intersection = struct {
@@ -123,6 +132,48 @@ pub const Contour = struct {
         const last_end = self.edges[self.edges.len - 1].endPoint();
 
         return first_start.approxEqual(last_end, 1e-10);
+    }
+
+    /// Test if a point is inside this contour using the winding number algorithm.
+    /// Uses scanline intersections to count crossings.
+    pub fn containsPoint(self: Contour, point: Vec2) bool {
+        var winding_number: i32 = 0;
+
+        for (self.edges) |e| {
+            var x_vals: [3]f64 = undefined;
+            var dy_vals: [3]i32 = undefined;
+            const n = e.scanlineIntersections(point.y, &x_vals, &dy_vals);
+
+            for (0..n) |k| {
+                if (x_vals[k] < point.x) {
+                    winding_number += dy_vals[k];
+                }
+            }
+        }
+
+        return winding_number != 0;
+    }
+
+    /// Get a representative interior point of this contour.
+    /// Used for containment testing between contours.
+    pub fn getInteriorPoint(self: Contour) Vec2 {
+        if (self.edges.len == 0) return Vec2{ .x = 0, .y = 0 };
+
+        // Use centroid of edge midpoints as a representative interior point
+        var sum_x: f64 = 0;
+        var sum_y: f64 = 0;
+        const sample_count = @min(self.edges.len, 4);
+
+        for (self.edges[0..sample_count]) |e| {
+            const p = e.point(0.5);
+            sum_x += p.x;
+            sum_y += p.y;
+        }
+
+        return Vec2{
+            .x = sum_x / @as(f64, @floatFromInt(sample_count)),
+            .y = sum_y / @as(f64, @floatFromInt(sample_count)),
+        };
     }
 
     /// Get the number of edges in this contour.
@@ -349,6 +400,86 @@ pub const Shape = struct {
     /// Normalize the shape orientation so outer contours are CCW
     /// and inner contours (holes) are CW.
     pub fn normalize(self: *Shape) void {
+        self.orientContours();
+    }
+
+    /// Detect overlapping contours with the same winding direction.
+    /// Returns a list of overlap pairs where one contour contains another
+    /// and both have the same winding sign (both solid or both holes).
+    ///
+    /// This is useful for fonts that have overlapping solid contours
+    /// that need to be corrected for proper MSDF generation.
+    pub fn detectOverlaps(self: *const Shape, allocator: Allocator) ![]OverlapInfo {
+        if (self.contours.len <= 1) return &[_]OverlapInfo{};
+
+        var overlaps = std.ArrayListUnmanaged(OverlapInfo){};
+        errdefer overlaps.deinit(allocator);
+
+        // Check each pair of contours
+        for (self.contours, 0..) |contour_a, i| {
+            const winding_a = contour_a.winding();
+            const point_a = contour_a.getInteriorPoint();
+
+            for (self.contours[i + 1 ..], i + 1..) |contour_b, j| {
+                const winding_b = contour_b.winding();
+
+                // Only check same-winding contours (both positive or both negative)
+                const same_sign = (winding_a > 0 and winding_b > 0) or (winding_a < 0 and winding_b < 0);
+                if (!same_sign) continue;
+
+                const point_b = contour_b.getInteriorPoint();
+
+                // Check if one contains the other
+                const a_contains_b = contour_a.containsPoint(point_b);
+                const b_contains_a = contour_b.containsPoint(point_a);
+
+                if (a_contains_b and !b_contains_a) {
+                    // A contains B
+                    try overlaps.append(allocator, .{
+                        .outer_idx = i,
+                        .inner_idx = j,
+                    });
+                } else if (b_contains_a and !a_contains_b) {
+                    // B contains A
+                    try overlaps.append(allocator, .{
+                        .outer_idx = j,
+                        .inner_idx = i,
+                    });
+                }
+                // If both contain each other or neither contains the other, skip
+            }
+        }
+
+        return overlaps.toOwnedSlice(allocator);
+    }
+
+    /// Correct overlapping contours by reversing the inner contour's winding.
+    /// This converts an overlapping same-winding pair into a proper outer/hole pair.
+    pub fn correctOverlaps(self: *Shape, overlaps: []const OverlapInfo) void {
+        for (overlaps) |overlap| {
+            // Reverse the inner contour to make it a hole
+            self.contours[overlap.inner_idx].reverse();
+        }
+    }
+
+    /// Orient contours and correct any overlapping same-winding contours.
+    /// This is a convenience function that combines orientContours and overlap correction.
+    ///
+    /// Note: This function requires an allocator for overlap detection.
+    /// If allocation fails, only basic orientation is performed.
+    pub fn orientContoursWithOverlapCorrection(self: *Shape, allocator: Allocator) void {
+        // First, detect overlaps before orientation (original winding state)
+        const overlaps = self.detectOverlaps(allocator) catch {
+            // If detection fails, fall back to basic orientation
+            self.orientContours();
+            return;
+        };
+        defer allocator.free(overlaps);
+
+        // Correct overlaps by reversing inner contours
+        self.correctOverlaps(overlaps);
+
+        // Then apply normal orientation
         self.orientContours();
     }
 

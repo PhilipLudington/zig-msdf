@@ -62,6 +62,13 @@ pub const GenerateOptions = struct {
     /// Invert the distance field (swap inside/outside).
     /// Some fonts have opposite winding order and need this enabled.
     invert_distances: bool = false,
+    /// Edge coloring configuration.
+    /// Controls the algorithm and parameters used for assigning colors to edges.
+    coloring_config: coloring.ColoringConfig = .{},
+    /// Detect and correct overlapping same-winding contours.
+    /// Some fonts have solid contours that overlap; enabling this converts
+    /// the inner contour to a hole for proper MSDF generation.
+    correct_overlaps: bool = false,
 };
 
 /// Options for generating a font atlas.
@@ -80,6 +87,10 @@ pub const AtlasOptions = struct {
     /// Invert the distance field (swap inside/outside).
     /// Some fonts have opposite winding order and need this enabled.
     invert_distances: bool = false,
+    /// Edge coloring configuration.
+    coloring_config: coloring.ColoringConfig = .{},
+    /// Detect and correct overlapping same-winding contours.
+    correct_overlaps: bool = false,
 };
 
 /// Metrics for a rendered glyph.
@@ -297,12 +308,25 @@ pub fn generateGlyph(
     // positions and poor color distribution for CW fonts like SF Mono.
     // By coloring first, we get the natural corner structure, and the colors
     // are preserved when edges are reversed during orientation.
-    coloring.colorEdgesSimple(&shape);
+    if (options.coloring_config.mode == .simple) {
+        // Simple coloring doesn't need allocation
+        coloring.colorEdgesWithConfig(&shape, options.coloring_config);
+    } else {
+        // Distance-based coloring requires allocation
+        coloring.colorEdgesConfigured(allocator, &shape, options.coloring_config) catch {
+            // Fall back to simple coloring if allocation fails
+            coloring.colorEdgesSimple(&shape);
+        };
+    }
 
     // Orient contours to standard winding (CCW outer, CW holes)
     // This fixes fonts with inconsistent or inverted winding like SF Mono.
     // The edge colors assigned above are preserved during reversal.
-    shape.orientContours();
+    if (options.correct_overlaps) {
+        shape.orientContoursWithOverlapCorrection(allocator);
+    } else {
+        shape.orientContours();
+    }
 
     // Get glyph metrics
     const advance_width = hmtx.getAdvanceWidth(glyph_index) catch return MsdfError.InvalidHmtxTable;
@@ -442,6 +466,8 @@ pub fn generateAtlas(
             .padding = options.padding,
             .range = options.range,
             .invert_distances = options.invert_distances,
+            .coloring_config = options.coloring_config,
+            .correct_overlaps = options.correct_overlaps,
         }) catch |err| {
             // Skip glyphs that fail to generate (e.g., missing glyphs)
             if (err == MsdfError.GlyphNotFound) {
